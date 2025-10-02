@@ -52,6 +52,7 @@ data/*
 .claude/*
 
 envs/*
+environment-spec.txt
 
 # Generated symlinks from extract.sh
 output/

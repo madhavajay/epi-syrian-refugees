@@ -1,0 +1,18 @@
+name: epigenetic-violence-analysis
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - python=3.13
+  - r-base=4.2
+  - r-essentials
+  - bioconductor-minfi
+  - bioconductor-epidish
+  - bioconductor-sesame
+  - r-caret
+  - r-e1071
+  - r-randomforest
+  - r-glmnet
+  - jupyterlab
+  - notebook

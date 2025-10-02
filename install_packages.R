@@ -7,6 +7,18 @@ cat("========================================\n\n")
 # Set CRAN mirror
 options(repos = c(CRAN = "https://cloud.r-project.org/"))
 
+# Prefer binary packages to avoid slow compilation
+# Note: conda-forge R builds don't support pkgType="both" (CRAN-only feature)
+# Instead, we rely on conda-forge's binary packages already installed
+# and CRAN's automatic binary selection for additional packages
+if (.Platform$OS.type == "unix" && Sys.info()["sysname"] == "Darwin") {
+  # macOS: Let R auto-detect available binaries
+  cat("macOS detected: Using default package type (auto-detects binaries)\n\n")
+} else {
+  # Linux: binaries often not available, will compile as needed
+  cat("Linux detected: Will compile from source as needed\n\n")
+}
+
 # Install BiocManager if not present
 if (!requireNamespace("BiocManager", quietly = TRUE)) {
   install.packages("BiocManager")
@@ -16,7 +28,9 @@ BiocManager::install(version = "3.16", ask = FALSE, update = FALSE)
 
 cat("\n--- Installing CRAN packages ---\n")
 cran_packages <- c(
+  "bacon",
   "broom",
+  "CGPfunctions",
   "data.table",
   "DiagrammeR",
   "doParallel",
@@ -26,37 +40,54 @@ cran_packages <- c(
   "factoextra",
   "forcats",
   "geepack",
+  "GGally",
+  "ggalluvial",
   "ggdendro",
+  "ggdist",
   "ggeffects",
   "ggforce",
+  "gghalves",
   "ggplot2",
   "ggpubr",
+  "ggrepel",
+  "ggVennDiagram",
   "gplots",
+  "gtools",
   "here",
   "Hmisc",
+  "jtools",
   "kableExtra",
   "lmtest",
   "magrittr",
   "MASS",
+  "na.tools",
   "pander",
   "parallel",
+  "patchwork",
   "PCAtools",
+  "prediction",
   "purrr",
+  "qqman",
   "rebus",
+  "resample",
+  "rlist",
   "sandwich",
+  "scales",
   "stringi",
   "stringr",
   "svd",
   "table1",
   "tidyr",
   "vegan",
+  "viridis",
   "xtable"
 )
 
 for (pkg in cran_packages) {
   if (!requireNamespace(pkg, quietly = TRUE)) {
     cat(paste0("Installing ", pkg, "...\n"))
-    install.packages(pkg, quiet = TRUE)
+    # Don't suppress output - shows whether binary or source is used
+    install.packages(pkg)
   } else {
     cat(paste0("✓ ", pkg, " already installed\n"))
   }
@@ -67,12 +98,12 @@ bioc_packages <- c(
   "minfi",
   "sesame",
   "sesameData",
-  "meffil",
   "EpiDISH",
   "sva",
-  "DNAmArray",
   "FDb.InfiniumMethylation.hg19",
   "IlluminaHumanMethylationEPICmanifest",
+  "IlluminaHumanMethylationEPICanno.ilm10b4.hg19",
+  "missMethyl",
   "org.Hs.eg.db"
 )
 
@@ -87,15 +118,57 @@ for (pkg in bioc_packages) {
 
 cat("\n--- Installing GitHub packages ---\n")
 
+# Ensure remotes is installed
+if (!requireNamespace("remotes", quietly = TRUE)) {
+  cat("Installing remotes...\n")
+  install.packages("remotes")
+}
+
 # Install ewastools from GitHub
 if (!requireNamespace("ewastools", quietly = TRUE)) {
   cat("Installing ewastools from GitHub...\n")
-  if (!requireNamespace("remotes", quietly = TRUE)) {
-    install.packages("remotes")
-  }
   remotes::install_github("hhhh5/ewastools")
 } else {
   cat("✓ ewastools already installed\n")
+}
+
+# Install meffil from GitHub (not available in Bioconductor 3.16)
+if (!requireNamespace("meffil", quietly = TRUE)) {
+  cat("Installing meffil from GitHub...\n")
+  tryCatch({
+    remotes::install_github("perishky/meffil")
+  }, error = function(e) {
+    cat("⚠ meffil installation failed\n")
+    cat("  Error: ", e$message, "\n")
+  })
+} else {
+  cat("✓ meffil already installed\n")
+}
+
+# Install methylCIPHER (PC-Clocks) from GitHub
+if (!requireNamespace("methylCIPHER", quietly = TRUE)) {
+  cat("Installing methylCIPHER from GitHub...\n")
+  tryCatch({
+    remotes::install_github("MorganLevineLab/methylCIPHER")
+  }, error = function(e) {
+    cat("⚠ methylCIPHER installation failed\n")
+    cat("  Error: ", e$message, "\n")
+  })
+} else {
+  cat("✓ methylCIPHER already installed\n")
+}
+
+# Install ClusterBootstrap from GitHub (optional)
+if (!requireNamespace("ClusterBootstrap", quietly = TRUE)) {
+  cat("Attempting to install ClusterBootstrap from GitHub...\n")
+  tryCatch({
+    remotes::install_github("dankessler/ClusterBootstrap")
+  }, error = function(e) {
+    cat("⚠ ClusterBootstrap installation failed - may not be available\n")
+    cat("  This is optional and analysis may proceed without it\n")
+  })
+} else {
+  cat("✓ ClusterBootstrap already installed\n")
 }
 
 cat("\n========================================\n")
@@ -107,11 +180,21 @@ cat("R version:\n")
 print(R.version.string)
 
 cat("\nChecking key packages:\n")
-key_packages <- c("minfi", "sesame", "meffil", "ewastools", "here", "tidyverse")
+key_packages <- c("minfi", "sesame", "meffil", "ewastools", "methylCIPHER", "here", "tidyverse")
 for (pkg in key_packages) {
   if (requireNamespace(pkg, quietly = TRUE)) {
     cat(paste0("✓ ", pkg, "\n"))
   } else {
-    cat(paste0("✗ ", pkg, " - INSTALLATION FAILED\n"))
+    cat(paste0("✗ ", pkg, " - INSTALLATION FAILED (critical for analysis)\n"))
+  }
+}
+
+cat("\nChecking optional packages:\n")
+optional_packages <- c("GGally", "ggdist", "gghalves", "ClusterBootstrap", "bacon", "PCAtools")
+for (pkg in optional_packages) {
+  if (requireNamespace(pkg, quietly = TRUE)) {
+    cat(paste0("✓ ", pkg, "\n"))
+  } else {
+    cat(paste0("⚠ ", pkg, " - not installed (optional)\n"))
   }
 }
