@@ -20,6 +20,35 @@ dir.create(download_cache, showWarnings = FALSE, recursive = TRUE)
 options(keep.source.pkgs = TRUE)
 Sys.setenv(R_INSTALL_STAGED = "false")  # Disable staged install to keep sources
 
+# Ensure libc++ still sees legacy char_traits specialisations needed by gdsfmt
+patch_header <- normalizePath(file.path("tools", "char_traits_patch.h"), mustWork = TRUE)
+
+append_flag <- function(var, flag) {
+  current <- Sys.getenv(var)
+  if (!nzchar(current)) {
+    do.call(Sys.setenv, setNames(list(flag), var))
+  } else if (!grepl(flag, current, fixed = TRUE)) {
+    do.call(Sys.setenv, setNames(list(paste(flag, current)), var))
+  }
+}
+
+# Ensure C/C++ compilation uses original R entry points (avoids Rf_* remapping)
+for (var in c("PKG_CPPFLAGS", "CPPFLAGS", "CFLAGS", "PKG_CFLAGS")) {
+  append_flag(var, "-DR_NO_REMAP")
+}
+
+# Inject compatibility header for C++ compilation units only
+for (var in c(
+  "CXXFLAGS", "PKG_CXXFLAGS",
+  "CXX11FLAGS", "PKG_CXX11FLAGS",
+  "CXX14FLAGS", "PKG_CXX14FLAGS",
+  "CXX17FLAGS", "PKG_CXX17FLAGS",
+  "CXX20FLAGS", "PKG_CXX20FLAGS"
+)) {
+  append_flag(var, "-DR_NO_REMAP")
+  append_flag(var, paste("-include", patch_header))
+}
+
 # Prefer binary packages to avoid slow compilation
 # Note: conda-forge R builds don't support pkgType="both" (CRAN-only feature)
 # Instead, we rely on conda-forge's binary packages already installed
@@ -52,9 +81,9 @@ cran_packages <- c(
   "GGally", "ggalluvial", "ggdendro", "ggdist", "ggeffects", "ggforce", "gghalves",
   "ggrepel", "ggVennDiagram", "gplots", "gtools", "scales", "viridis", "patchwork",
   # Stats & analysis
-  "bacon", "doParallel", "emmeans", "factoextra", "geepack",
+  "doParallel", "emmeans", "factoextra", "geepack",
   "Hmisc", "jtools", "lmtest", "MASS", "na.tools", "pander",
-  "parallel", "PCAtools", "prediction", "qqman", "rebus",
+  "parallel", "prediction", "qqman", "rebus",
   "resample", "rlist", "sandwich", "stringi", "svd", "table1",
   "vegan", "xtable",
   # Complex packages (depend on above)
@@ -75,6 +104,7 @@ for (pkg in cran_packages) {
 cat("\n--- Installing Bioconductor packages ---\n")
 bioc_packages <- c(
   "gdsfmt", "DNAcopy",  # Dependencies for meffil
+  "bacon", "PCAtools",
   "minfi", "sesame", "sesameData", "EpiDISH", "sva",
   "FDb.InfiniumMethylation.hg19",
   "IlluminaHumanMethylationEPICmanifest",
@@ -143,7 +173,7 @@ if (!requireNamespace("ggmosaic", quietly = TRUE)) {
 if (!requireNamespace("ClusterBootstrap", quietly = TRUE)) {
   cat("Installing ClusterBootstrap from GitHub...\n")
   tryCatch({
-    remotes::install_github("dankessler/ClusterBootstrap")
+    remotes::install_github("mathijsdeen/ClusterBootstrap")
   }, error = function(e) {
     cat("⚠ ClusterBootstrap installation failed (optional)\n")
   })

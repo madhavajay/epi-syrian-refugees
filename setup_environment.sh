@@ -7,6 +7,7 @@ LOG_FILE="setup_$(date +%Y%m%d_%H%M%S).log"
 exec > >(tee -a "$LOG_FILE") 2>&1
 
 # Environment name and location
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_NAME="epigenetic-violence-analysis"
 ENV_DIR="./envs/${ENV_NAME}"
 SPEC_FILE="environment-spec.txt"
@@ -157,7 +158,7 @@ fi
 
 # Some heavy dependencies are more reliable from micromamba binaries than CRAN/Bioconductor
 echo "Ensuring pre-built binaries for core compiled R dependencies..."
-MICROMAMBA_PKGS=(r-nloptr r-igraph)
+MICROMAMBA_PKGS=(r-nloptr r-igraph pkg-config cairo)
 
 # bioconductor-gdsfmt currently ships Linux-only binaries; skip on macOS to avoid solver failures
 if [[ "$(uname -s)" != "Darwin" ]]; then
@@ -221,8 +222,45 @@ if [[ "$ARCH" == "arm64" ]]; then
         echo "✓ Removed problematic -pipe flag from Fortran toolchain"
     fi
 
+    # Ensure compilers see the macOS SDK when cross-compiling to x86_64
+    if command -v xcrun >/dev/null 2>&1; then
+        export SDKROOT="$(xcrun --sdk macosx --show-sdk-path 2>/dev/null)"
+    fi
+
+    # Inject compatibility flags for packages that expect legacy libc++ char_traits
+    PATCH_HEADER="${SCRIPT_DIR}/tools/char_traits_patch.h"
+    if [ -f "${PATCH_HEADER}" ]; then
+        # Ensure R headers expose original symbol names (avoids Rf_* remapping in gdsfmt)
+        for var in PKG_CPPFLAGS CPPFLAGS CFLAGS PKG_CFLAGS; do
+            current=$(eval echo "\${$var}")
+            define="-DR_NO_REMAP"
+            case " ${current} " in
+                *"${define}"*) : ;;
+                *) eval "export ${var}=\"${define} ${current}\"" ;;
+            esac
+        done
+
+        # Apply char_traits compatibility shim for C++ compilation units only
+        for var in CXXFLAGS PKG_CXXFLAGS CXX11FLAGS PKG_CXX11FLAGS CXX14FLAGS PKG_CXX14FLAGS CXX17FLAGS PKG_CXX17FLAGS CXX20FLAGS PKG_CXX20FLAGS; do
+            current=$(eval echo "\${$var}")
+            define="-DR_NO_REMAP"
+            include_flag="-include ${PATCH_HEADER}"
+            case " ${current} " in
+                *"${define}"*) : ;;
+                *) eval "export ${var}=\"${define} ${current}\"" ;;
+            esac
+            current=$(eval echo "\${$var}")
+            case " ${current} " in
+                *"${include_flag}"*) : ;;
+                *) eval "export ${var}=\"${include_flag} ${current}\"" ;;
+            esac
+        done
+    fi
+
+    export PKG_CONFIG_PATH="${ENV_DIR_ABS}/lib/pkgconfig:${ENV_DIR_ABS}/share/pkgconfig:${PKG_CONFIG_PATH}"
+
     # Use workspace-local temp dir so seatbelt doesn't block linking (e.g. nlopt build)
-    export TMPDIR="${ENV_DIR}/tmp"
+    export TMPDIR="${ENV_DIR_ABS}/tmp"
     mkdir -p "${TMPDIR}"
 
     # Force x86_64 for R
