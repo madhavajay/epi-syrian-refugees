@@ -75,6 +75,7 @@ cran_packages <- c(
   "ggplot2", "here", "magrittr", "purrr", "stringr", "tidyr",
   # Missing dependencies first (needed by other packages)
   "mvtnorm", "igraph", "Cairo", "multcomp", "lme4", "DNAcopy",
+  "kableExtra", "pls",
   "flashClust", "leaps", "car", "ggpubr", "BayesFactor", "DescTools",
   "partykit",
   # Visualization
@@ -106,6 +107,7 @@ bioc_packages <- c(
   "gdsfmt", "DNAcopy",  # Dependencies for meffil
   "bacon", "PCAtools",
   "minfi", "sesame", "sesameData", "EpiDISH", "sva",
+  "DNAmArray",
   "FDb.InfiniumMethylation.hg19",
   "IlluminaHumanMethylationEPICmanifest",
   "IlluminaHumanMethylationEPICanno.ilm10b4.hg19",
@@ -121,12 +123,24 @@ for (pkg in bioc_packages) {
   }
 }
 
+# Fallback for DNAmArray (archived on Bioconductor as of 3.20)
+if (!requireNamespace("DNAmArray", quietly = TRUE)) {
+  cat("Installing DNAmArray from GitHub (Bioconductor release unavailable)...\n")
+  remotes::install_github("molepi/DNAmArray", upgrade = "never")
+}
+
 cat("\n--- Installing GitHub packages ---\n")
 
 # Ensure remotes is installed
 if (!requireNamespace("remotes", quietly = TRUE)) {
   cat("Installing remotes...\n")
   install.packages("remotes", destdir = download_cache)
+}
+
+# Fallback for kableExtra (not yet published for current R release)
+if (!requireNamespace("kableExtra", quietly = TRUE)) {
+  cat("Installing kableExtra from GitHub (CRAN build unavailable)...\n")
+  remotes::install_github("haozhu233/kableExtra")
 }
 
 # Install ewastools from GitHub

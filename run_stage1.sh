@@ -11,7 +11,7 @@ if [[ "$1" == "--test" ]]; then
     echo "Epigenetic Violence Analysis"
     echo "========================================="
     echo ""
-    echo "⚠ Running in test mode with 2 samples only"
+    echo "⚠ Running in test mode with 4 samples only"
     echo "  For full analysis, run without --test flag"
     echo ""
 else
@@ -28,6 +28,9 @@ echo ""
 
 # Check if environment exists
 ENV_DIR="./envs/epigenetic-violence-analysis"
+RMD_PATH_BASE="script/igp_quality_control_20230222.Rmd"
+RMD_PATH_TEST="script/igp_quality_control_20230222_test.Rmd"
+RMD_PATH="$RMD_PATH_BASE"
 if [ ! -d "$ENV_DIR" ]; then
     echo "✗ Environment not found: $ENV_DIR"
     echo "  Run ./setup_environment.sh first"
@@ -44,21 +47,21 @@ fi
 echo "✓ Directory structure set up"
 
 # Check if analysis script exists
-if [ ! -f "script/igp_quality_control_20230222.Rmd" ]; then
-    echo "✗ Analysis script not found: script/igp_quality_control_20230222.Rmd"
+if [ ! -f "$RMD_PATH_BASE" ]; then
+    echo "✗ Analysis script not found: $RMD_PATH_BASE"
     echo "  Run ./extract.sh to create symlinks"
     exit 1
 fi
 echo "✓ Analysis script found"
 
 # Check IDAT files
-idat_count=$(find data -maxdepth 1 -name "*.idat.gz" 2>/dev/null | wc -l | tr -d ' ')
+idat_count=$(find data -type f -name "*.idat.gz" 2>/dev/null | wc -l | tr -d ' ')
 
 if [ "$TEST_MODE" = true ]; then
-    # In test mode, we only need 4 IDAT files (2 samples × 2 channels)
-    if [ "$idat_count" -lt 4 ]; then
+    # In test mode, we only need 8 IDAT files (4 samples × 2 channels)
+    if [ "$idat_count" -lt 8 ]; then
         echo "✗ Not enough IDAT files for test mode"
-        echo "  Need at least 4 files (2 samples × 2 channels), found $idat_count"
+        echo "  Need at least 8 files (4 samples × 2 channels), found $idat_count"
         echo "  Run ./download.sh to download IDAT files"
         exit 1
     else
@@ -80,9 +83,43 @@ else
     fi
 fi
 
+# Ensure data/ has direct pointers to the IDAT archives (expected by R scripts)
+if [ -d "data/idat" ]; then
+    # Remove placeholder glob link if it was created before downloads finished
+    if [ -L "data/*.idat.gz" ]; then
+        rm -f "data/*.idat.gz"
+    fi
+
+    if compgen -G "data/idat/*.idat.gz" > /dev/null; then
+        echo "Linking IDAT files into data/..."
+        while IFS= read -r idat_path; do
+            base_name=$(basename "$idat_path")
+            ln -sf "idat/${base_name}" "data/${base_name}"
+
+            trimmed_name=$(echo "$base_name" | sed 's/^GSM[0-9]*_//')
+            if [[ "$trimmed_name" != "$base_name" ]]; then
+                ln -sf "idat/${base_name}" "data/${trimmed_name}"
+            fi
+        done < <(find data/idat -maxdepth 1 -type f -name "*.idat.gz")
+        echo "✓ IDAT links refreshed"
+    fi
+fi
+
 # Check critical input files
 echo ""
 echo "Checking critical input files..."
+
+# Repair sample sheet symlink if it accidentally points to data/data/...
+SAMPLE_SHEET="data/cMulligan_SampleSheet160.csv"
+SAMPLE_SHEET_SRC="data/22183534/cMulligan_SampleSheet160.csv"
+if [ ! -f "$SAMPLE_SHEET" ] && [ -L "$SAMPLE_SHEET" ]; then
+    rm -f "$SAMPLE_SHEET"
+fi
+if [ ! -f "$SAMPLE_SHEET" ] && [ -f "$SAMPLE_SHEET_SRC" ]; then
+    echo "  ↻ Restoring sample sheet from extracted data/..."
+    cp "$SAMPLE_SHEET_SRC" "$SAMPLE_SHEET"
+fi
+
 critical_files=(
     "data/cMulligan_SampleSheet160.csv"
     "supp_data/cMulligan_SampleManifest160.csv"
@@ -118,7 +155,7 @@ echo ""
 # Set up test mode if requested
 if [ "$TEST_MODE" = true ]; then
     echo "Test Mode Configuration:"
-    echo "  - Creating test sample sheet (2 samples)..."
+    echo "  - Creating test sample sheet (4 samples)..."
 
     # Create test sample sheet
     ./create_test_samplesheet.sh
@@ -128,6 +165,14 @@ if [ "$TEST_MODE" = true ]; then
         cp data/cMulligan_SampleSheet160.csv data/cMulligan_SampleSheet160.csv.backup
     fi
     cp data/cMulligan_SampleSheet_test.csv data/cMulligan_SampleSheet160.csv
+
+    echo "  - Using low-sample variant of QC notebook"
+    if [ ! -f "$RMD_PATH_TEST" ]; then
+        echo "✗ Test R Markdown not found: $RMD_PATH_TEST"
+        echo "  Re-run setup to restore extracted scripts"
+        exit 1
+    fi
+    RMD_PATH="$RMD_PATH_TEST"
 
     echo ""
     echo "Estimated runtime: 30-60 minutes"
@@ -162,13 +207,16 @@ echo ""
 echo "Rendering R Markdown file..."
 echo "----------------------------------------"
 
-if [[ "$ARCH" == "arm64" ]]; then
-    arch -x86_64 Rscript -e "rmarkdown::render('script/igp_quality_control_20230222.Rmd')"
-else
-    Rscript -e "rmarkdown::render('script/igp_quality_control_20230222.Rmd')"
-fi
+RENDER_CMD="rmarkdown::render('$RMD_PATH', output_file = 'igp_quality_control_20230222.html', output_dir = 'script')"
 
+set +e
+if [[ "$ARCH" == "arm64" ]]; then
+    arch -x86_64 Rscript -e "$RENDER_CMD"
+else
+    Rscript -e "$RENDER_CMD"
+fi
 render_exit_code=$?
+set -e
 
 # Get end time
 end_time=$(date +%s)
@@ -263,7 +311,7 @@ echo "========================================="
 echo ""
 
 if [ "$TEST_MODE" = true ]; then
-    echo "⚠ This was a TEST RUN with 2 samples only"
+    echo "⚠ This was a TEST RUN with 4 samples only"
     echo "  Results are not representative of full analysis"
     echo ""
     echo "To run full analysis:"

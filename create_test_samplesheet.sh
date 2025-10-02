@@ -1,17 +1,20 @@
 #!/bin/bash
 
-# Create a test sample sheet with only 2 samples for quick testing
+# Create a test sample sheet with 4 samples for quick testing
 
 echo "Creating test sample sheet..."
 
-# Get header and first 2 data rows from original sample sheet
+# Get header and first 4 data rows from original sample sheet
 head -1 data/22183534/cMulligan_SampleSheet160.csv > data/cMulligan_SampleSheet_test.csv
-tail -n +2 data/22183534/cMulligan_SampleSheet160.csv | head -2 >> data/cMulligan_SampleSheet_test.csv
+tail -n +2 data/22183534/cMulligan_SampleSheet160.csv | head -4 >> data/cMulligan_SampleSheet_test.csv
+
+# Normalize line endings to avoid stray carriage returns
+perl -pi -e 's/\r//g' data/cMulligan_SampleSheet_test.csv
 
 sample_count=$(tail -n +2 data/cMulligan_SampleSheet_test.csv | wc -l | tr -d ' ')
 
 echo "✓ Created data/cMulligan_SampleSheet_test.csv"
-echo "  Contains: $sample_count samples (header + 2 samples)"
+echo "  Contains: $sample_count samples (header + 4 samples)"
 echo ""
 
 # Show what samples are included
