@@ -50,3 +50,11 @@ rsconnect/
 
 data/*
 .claude/*
+
+envs/*
+
+# Generated symlinks from extract.sh
+output/
+script/
+supp_data/
+igp.Rproj
