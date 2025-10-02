@@ -100,7 +100,18 @@ if [ -d "data/idat" ]; then
 
   if [ $idat_count -gt 0 ]; then
     echo "Linking IDAT files to data/..."
-    ln -sf idat/*.idat.gz data/ 2>/dev/null || true
+    if [ -L "data/*.idat.gz" ]; then
+      rm -f "data/*.idat.gz"
+    fi
+    while IFS= read -r idat_path; do
+      base_name=$(basename "$idat_path")
+      ln -sf "idat/${base_name}" "data/${base_name}"
+
+      trimmed_name=$(echo "$base_name" | sed 's/^GSM[0-9]*_//')
+      if [[ "$trimmed_name" != "$base_name" ]]; then
+        ln -sf "idat/${base_name}" "data/${trimmed_name}"
+      fi
+    done < <(find data/idat -maxdepth 1 -type f -name "*.idat.gz")
     echo "✓ Linked IDAT files"
   else
     echo "⚠ No IDAT files found - run ./download.sh to download them"
@@ -143,4 +154,3 @@ echo ""
 echo "Next steps:"
 echo "  1. Setup R environment: ./setup_environment.sh"
 echo "  2. Activate environment: source activate_env.sh"
-
