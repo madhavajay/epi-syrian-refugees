@@ -84,8 +84,7 @@ cran_packages <- c(
   "jsonlite", "data.table", "Rcpp", "broom", "dplyr", "DT", "forcats",
   "ggplot2", "here", "magrittr", "purrr", "stringr", "tidyr",
   # Missing dependencies first (needed by other packages)
-  # Note: igraph, Cairo, nloptr, XML are installed via conda to avoid compilation issues on Linux
-  # Note: kableExtra is installed from GitHub later (see GitHub packages section)
+  # Note: igraph, Cairo, nloptr, XML, kableExtra are installed via conda to avoid compilation issues on Linux
   # On macOS these compile fine from CRAN, but we use conda for cross-platform consistency
   "mvtnorm", "multcomp", "lme4", "DNAcopy", "pls",
   "flashClust", "leaps", "car", "ggpubr", "BayesFactor", "DescTools",
@@ -149,11 +148,7 @@ if (!requireNamespace("remotes", quietly = TRUE)) {
   install.packages("remotes", destdir = download_cache)
 }
 
-# Fallback for kableExtra (not yet published for current R release)
-if (!requireNamespace("kableExtra", quietly = TRUE)) {
-  cat("Installing kableExtra from GitHub (CRAN build unavailable)...\n")
-  remotes::install_github("haozhu233/kableExtra")
-}
+# kableExtra is now in the CRAN packages list above
 
 # Install ewastools from GitHub
 if (!requireNamespace("ewastools", quietly = TRUE)) {

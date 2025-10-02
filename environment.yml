@@ -21,3 +21,4 @@ dependencies:
   - r-igraph  # Graph library - precompiled to avoid compilation issues
   - r-nloptr  # Optimizer - precompiled to avoid cmake issues
   - r-xml  # XML parser - precompiled to avoid libxml2 issues
+  - r-kableextra  # Table formatting - precompiled to avoid svglite/zlib issues

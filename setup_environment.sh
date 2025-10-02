@@ -216,7 +216,7 @@ fi
 
 # Some heavy dependencies are more reliable from micromamba binaries than CRAN/Bioconductor
 echo "Ensuring pre-built binaries for core compiled R dependencies..."
-MICROMAMBA_PKGS=(r-nloptr r-igraph r-cairo r-xml pkg-config cairo)
+MICROMAMBA_PKGS=(r-nloptr r-igraph r-cairo r-xml r-kableextra pkg-config cairo)
 
 # bioconductor-gdsfmt currently ships Linux-only binaries; skip on macOS to avoid solver failures
 if [[ "$(uname -s)" != "Darwin" ]]; then
