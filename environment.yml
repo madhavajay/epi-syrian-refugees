@@ -5,7 +5,7 @@ channels:
   - defaults
 dependencies:
   - python=3.13
-  - r-base=4.2
+  - r-base=4.4
   - r-essentials
   - bioconductor-minfi
   - bioconductor-epidish

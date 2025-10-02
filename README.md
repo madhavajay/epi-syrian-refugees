@@ -35,16 +35,102 @@ This repository contains methylation and epigenetic age data from Syrian refugee
 2. **Epigenetic Age**: PedBE, Skin & Blood, pan-tissue clocks, PC-Clocks
 3. **Quality Control**: 768,625 probes retained after filtering
 
-## Scripts Usage
+## Prerequisites
 
-### Download Data
+### Install Micromamba
+
+Micromamba is required for managing the R environment and dependencies.
+
+**Quick install:**
 ```bash
-./download.sh    # Downloads all 4 figshare datasets to data/
+./install_micromamba.sh
 ```
 
-### Extract Archives
+**Manual installation alternatives:**
+
+**macOS (Homebrew):**
 ```bash
-./extract.sh     # Extracts all .zip files to subdirectories
+brew install micromamba
+```
+
+**macOS/Linux (official installer):**
+```bash
+"${SHELL}" <(curl -L https://micro.mamba.pm/install.sh)
+```
+
+**After installation, initialize your shell:**
+```bash
+micromamba shell init --shell bash --root-prefix=~/micromamba
+source ~/.bashrc  # or ~/.zshrc for zsh
+```
+
+**Verify installation:**
+```bash
+micromamba --version
+```
+
+See [Micromamba documentation](https://mamba.readthedocs.io/en/latest/installation/micromamba-installation.html) for more options.
+
+## Quick Start
+
+### Complete Pipeline
+
+Run the entire 4-stage analysis pipeline:
+```bash
+# Full analysis (30-40+ hours, 128 GB RAM)
+./run_all_stages.sh
+
+# Test mode (quick validation, 2-4 hours, 32-64 GB RAM)
+./run_all_stages.sh --test
+
+# Run specific stage only
+./run_all_stages.sh --stage 2
+```
+
+### Step-by-Step Setup
+
+1. **Download data**
+```bash
+./download.sh              # Downloads 4 figshare datasets + 320 IDAT files
+./download.sh --skip-verify  # Skip file integrity checks (faster)
+```
+
+2. **Extract and set up directories**
+```bash
+./extract.sh               # Extracts ZIPs, creates symlinks
+```
+
+3. **Set up R environment**
+```bash
+./setup_environment.sh     # Creates micromamba env with all packages
+source activate_env.sh     # Activate environment
+```
+
+4. **Run analysis stages**
+```bash
+# Stage 1: Quality Control (8-12 hours)
+./run_stage1.sh           # Full analysis
+./run_stage1.sh --test    # Test with 2 samples (30-60 min)
+
+# Stage 2: EWAS Analysis (12-24 hours)
+./run_stage2.sh           # Full analysis
+./run_stage2.sh --test    # Test mode (1-2 hours)
+
+# Stage 3: Epigenetic Age QC (8-12 hours)
+./run_stage3.sh           # Full analysis
+./run_stage3.sh --test    # Test mode (30-60 min)
+
+# Stage 4: Age Acceleration Analysis (2-4 hours)
+./run_stage4.sh           # Full analysis
+./run_stage4.sh --test    # Test mode (30-60 min)
+```
+
+### View Results
+```bash
+open script/igp_quality_control_20230222.html              # Stage 1 QC
+open script/IGP_HiperGator_Code_v24.html                   # Stage 2 EWAS
+open script/igp_epigenetic_age_quality_control_20230611.html  # Stage 3 Age QC
+open script/igp_epigenetic_age_analysis_v6.html            # Stage 4 Acceleration
 ```
 
 ## Directory Structure
@@ -417,6 +503,15 @@ Quality Control (22183534/)
 - R 4.2.0+
 - Bioconductor packages: SeSAMe, meffil, ewastools, EpiDISH
 - PC-Clocks package: https://github.com/MorganLevineLab/PC-Clocks
+
+---
+
+## Documentation
+
+- **[REPLICATION.md](REPLICATION.md)** - Detailed methodology for each analysis stage
+- **[PIPELINE_SUMMARY.md](PIPELINE_SUMMARY.md)** - Complete reference guide with all scripts
+- **[DATA_CHECK.md](DATA_CHECK.md)** - File inventory and status
+- **[TROUBLESHOOTING.md](TROUBLESHOOTING.md)** - Common issues and solutions
 
 ---
 

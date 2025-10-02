@@ -4,15 +4,8 @@ cat("========================================\n")
 cat("Installing R packages for Epigenetic Violence Analysis\n")
 cat("========================================\n\n")
 
-# Set CRAN mirror and increase timeout for slow networks
+# Set CRAN mirror
 options(repos = c(CRAN = "https://cloud.r-project.org/"))
-options(timeout = 300)  # 5 minutes instead of 60 seconds
-
-# Parallel compilation - use all CPU cores
-num_cores <- parallel::detectCores()
-cat(paste0("Detected ", num_cores, " CPU cores - enabling parallel compilation\n"))
-Sys.setenv(MAKEFLAGS = paste0("-j", num_cores))
-options(Ncpus = num_cores)
 
 # Keep downloaded packages in persistent cache (don't delete after install)
 download_cache <- normalizePath("./r_package_cache", mustWork = FALSE)
@@ -37,28 +30,63 @@ if (!requireNamespace("BiocManager", quietly = TRUE)) {
   install.packages("BiocManager")
 }
 
-BiocManager::install(version = "3.20", ask = FALSE, update = FALSE)
+BiocManager::install(version = "3.16", ask = FALSE, update = FALSE)
 
-cat("\n--- Installing CRAN packages (ALL BATCHES) ---\n")
+cat("\n--- Installing CRAN packages ---\n")
 cran_packages <- c(
-  # Core
-  "jsonlite", "data.table", "Rcpp", "broom", "dplyr", "DT", "forcats",
-  "ggplot2", "here", "magrittr", "purrr", "stringr", "tidyr",
-  # Missing dependencies first (needed by other packages)
-  "mvtnorm", "igraph", "Cairo", "multcomp", "lme4", "DNAcopy",
-  "flashClust", "leaps", "car", "ggpubr", "BayesFactor", "DescTools",
-  "partykit",
-  # Visualization
-  "GGally", "ggalluvial", "ggdendro", "ggdist", "ggeffects", "ggforce", "gghalves",
-  "ggrepel", "ggVennDiagram", "gplots", "gtools", "scales", "viridis", "patchwork",
-  # Stats & analysis
-  "bacon", "doParallel", "emmeans", "factoextra", "geepack",
-  "Hmisc", "jtools", "lmtest", "MASS", "na.tools", "pander",
-  "parallel", "PCAtools", "prediction", "qqman", "rebus",
-  "resample", "rlist", "sandwich", "stringi", "svd", "table1",
-  "vegan", "xtable",
-  # Complex packages (depend on above)
-  "FactoMineR", "CGPfunctions", "DiagrammeR"
+  "bacon",
+  "broom",
+  "CGPfunctions",
+  "data.table",
+  "DiagrammeR",
+  "doParallel",
+  "dplyr",
+  "DT",
+  "emmeans",
+  "factoextra",
+  "forcats",
+  "geepack",
+  "GGally",
+  "ggalluvial",
+  "ggdendro",
+  "ggdist",
+  "ggeffects",
+  "ggforce",
+  "gghalves",
+  "ggplot2",
+  "ggpubr",
+  "ggrepel",
+  "ggVennDiagram",
+  "gplots",
+  "gtools",
+  "here",
+  "Hmisc",
+  "jtools",
+  "kableExtra",
+  "lmtest",
+  "magrittr",
+  "MASS",
+  "na.tools",
+  "pander",
+  "parallel",
+  "patchwork",
+  "PCAtools",
+  "prediction",
+  "purrr",
+  "qqman",
+  "rebus",
+  "resample",
+  "rlist",
+  "sandwich",
+  "scales",
+  "stringi",
+  "stringr",
+  "svd",
+  "table1",
+  "tidyr",
+  "vegan",
+  "viridis",
+  "xtable"
 )
 
 for (pkg in cran_packages) {
@@ -74,12 +102,16 @@ for (pkg in cran_packages) {
 
 cat("\n--- Installing Bioconductor packages ---\n")
 bioc_packages <- c(
-  "gdsfmt", "DNAcopy",  # Dependencies for meffil
-  "minfi", "sesame", "sesameData", "EpiDISH", "sva",
+  "minfi",
+  "sesame",
+  "sesameData",
+  "EpiDISH",
+  "sva",
   "FDb.InfiniumMethylation.hg19",
   "IlluminaHumanMethylationEPICmanifest",
   "IlluminaHumanMethylationEPICanno.ilm10b4.hg19",
-  "missMethyl", "org.Hs.eg.db"
+  "missMethyl",
+  "org.Hs.eg.db"
 )
 
 for (pkg in bioc_packages) {
@@ -96,7 +128,7 @@ cat("\n--- Installing GitHub packages ---\n")
 # Ensure remotes is installed
 if (!requireNamespace("remotes", quietly = TRUE)) {
   cat("Installing remotes...\n")
-  install.packages("remotes", destdir = download_cache)
+  install.packages("remotes")
 }
 
 # Install ewastools from GitHub
@@ -107,45 +139,40 @@ if (!requireNamespace("ewastools", quietly = TRUE)) {
   cat("✓ ewastools already installed\n")
 }
 
-# Install meffil from GitHub
+# Install meffil from GitHub (not available in Bioconductor 3.16)
 if (!requireNamespace("meffil", quietly = TRUE)) {
   cat("Installing meffil from GitHub...\n")
   tryCatch({
     remotes::install_github("perishky/meffil")
   }, error = function(e) {
-    cat("⚠ meffil installation failed:", e$message, "\n")
+    cat("⚠ meffil installation failed\n")
+    cat("  Error: ", e$message, "\n")
   })
 } else {
   cat("✓ meffil already installed\n")
 }
 
-# Install methylCIPHER from GitHub
+# Install methylCIPHER (PC-Clocks) from GitHub
 if (!requireNamespace("methylCIPHER", quietly = TRUE)) {
   cat("Installing methylCIPHER from GitHub...\n")
   tryCatch({
     remotes::install_github("MorganLevineLab/methylCIPHER")
   }, error = function(e) {
-    cat("⚠ methylCIPHER installation failed:", e$message, "\n")
+    cat("⚠ methylCIPHER installation failed\n")
+    cat("  Error: ", e$message, "\n")
   })
 } else {
   cat("✓ methylCIPHER already installed\n")
 }
 
-# Install ggmosaic (needs ggplot2 ≥ 4 support from GitHub)
-if (!requireNamespace("ggmosaic", quietly = TRUE)) {
-  cat("Installing ggmosaic from GitHub (ggplot2 >= 4 support)...\n")
-  remotes::install_github("haleyjeppson/ggmosaic")
-} else {
-  cat("✓ ggmosaic already installed\n")
-}
-
 # Install ClusterBootstrap from GitHub (optional)
 if (!requireNamespace("ClusterBootstrap", quietly = TRUE)) {
-  cat("Installing ClusterBootstrap from GitHub...\n")
+  cat("Attempting to install ClusterBootstrap from GitHub...\n")
   tryCatch({
     remotes::install_github("dankessler/ClusterBootstrap")
   }, error = function(e) {
-    cat("⚠ ClusterBootstrap installation failed (optional)\n")
+    cat("⚠ ClusterBootstrap installation failed - may not be available\n")
+    cat("  This is optional and analysis may proceed without it\n")
   })
 } else {
   cat("✓ ClusterBootstrap already installed\n")

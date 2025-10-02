@@ -6,16 +6,33 @@ set -e  # Exit on error
 LOG_FILE="setup_$(date +%Y%m%d_%H%M%S).log"
 exec > >(tee -a "$LOG_FILE") 2>&1
 
+# Environment name and location
+ENV_NAME="epigenetic-violence-analysis"
+ENV_DIR="./envs/${ENV_NAME}"
+SPEC_FILE="environment-spec.txt"
+R_PACKAGES_MARKER="${ENV_DIR}/.r_packages_installed"
+
+# Handle --clean flag
+if [[ "$1" == "--clean" ]]; then
+    echo "========================================="
+    echo "CLEAN MODE: Removing all cached data"
+    echo "========================================="
+    echo ""
+    echo "Removing environment directory: $ENV_DIR"
+    rm -rf "$ENV_DIR"
+    echo "Removing spec file: $SPEC_FILE"
+    rm -f "$SPEC_FILE"
+    echo ""
+    echo "✓ Clean complete. Continuing with fresh setup..."
+    echo ""
+    # Don't exit - continue with setup
+fi
+
 echo "========================================="
 echo "Setting up R environment for Epigenetic Violence Analysis"
 echo "========================================="
 echo "Logging to: $LOG_FILE"
 echo ""
-
-# Environment name and location
-ENV_NAME="epigenetic-violence-analysis"
-ENV_DIR="./envs/${ENV_NAME}"
-SPEC_FILE="environment-spec.txt"
 
 echo "Environment: $ENV_NAME"
 echo "Location: $ENV_DIR"
@@ -85,7 +102,7 @@ if [ ! -d "$ENV_DIR" ] && [ ! -f "$SPEC_FILE" ]; then
         -c bioconda \
         --strict-channel-priority \
         -y \
-        r-base=4.2 \
+        r-base=4.4 \
         r-essentials \
         r-devtools \
         bioconductor-minfi \
@@ -132,42 +149,92 @@ EOF
     echo "  Future runs will use this spec file (skips dependency solver)"
 fi
 
-# Check if R packages are already installed
-R_PACKAGES_MARKER="${ENV_DIR}/.r_packages_installed"
-
+# Always retry R package installation (remove marker to force check)
 if [ -f "$R_PACKAGES_MARKER" ]; then
-    echo "✓ R packages already installed (marker found)"
-    echo "  To reinstall: rm $R_PACKAGES_MARKER && ./setup_environment.sh"
-    echo ""
-else
-    echo ""
-    echo "========================================="
-    echo "Installing R packages"
-    echo "========================================="
-    echo ""
-
-    # Use direct path to Rscript instead of activation (more reliable in scripts)
-    RSCRIPT="${ENV_DIR}/bin/Rscript"
-
-    if [ ! -f "$RSCRIPT" ]; then
-        echo "✗ Rscript not found at $RSCRIPT"
-        echo "  Environment may not be properly created"
-        exit 1
-    fi
-
-    # Ensure x86_64 for R package installation on ARM
-    if [[ "$ARCH" == "arm64" ]]; then
-        echo "Installing R packages (forcing x86_64 via Rosetta)..."
-        arch -x86_64 "$RSCRIPT" install_packages.R
-    else
-        echo "Installing R packages from install_packages.R..."
-        "$RSCRIPT" install_packages.R
-    fi
-
-    # Create marker file on successful installation
-    touch "$R_PACKAGES_MARKER"
-    echo "✓ R packages installation complete - created marker file"
+    echo "Removing R package marker to retry failed installations..."
+    rm -f "$R_PACKAGES_MARKER"
 fi
+
+# Some heavy dependencies are more reliable from micromamba binaries than CRAN/Bioconductor
+echo "Ensuring pre-built binaries for core compiled R dependencies..."
+MICROMAMBA_PKGS=(r-nloptr r-igraph)
+
+# bioconductor-gdsfmt currently ships Linux-only binaries; skip on macOS to avoid solver failures
+if [[ "$(uname -s)" != "Darwin" ]]; then
+    MICROMAMBA_PKGS+=(bioconductor-gdsfmt)
+fi
+
+if [[ "${#MICROMAMBA_PKGS[@]}" -gt 0 ]]; then
+    if [[ "$ARCH" == "arm64" ]]; then
+        CONDA_SUBDIR=osx-64 micromamba install -p "$ENV_DIR" -y "${MICROMAMBA_PKGS[@]}" || true
+    else
+        micromamba install -p "$ENV_DIR" -y "${MICROMAMBA_PKGS[@]}" || true
+    fi
+fi
+
+echo ""
+echo "========================================="
+echo "Installing R packages"
+echo "========================================="
+echo ""
+
+# Use direct path to Rscript instead of activation (more reliable in scripts)
+RSCRIPT="${ENV_DIR}/bin/Rscript"
+
+if [ ! -f "$RSCRIPT" ]; then
+    echo "✗ Rscript not found at $RSCRIPT"
+    echo "  Environment may not be properly created"
+    exit 1
+fi
+
+# Ensure x86_64 for R package installation on ARM
+if [[ "$ARCH" == "arm64" ]]; then
+    echo "Installing R packages (forcing x86_64 via Rosetta)..."
+
+    # Patch R's Makeconf to use absolute paths to compilers
+    MAKECONF="${ENV_DIR}/lib/R/etc/Makeconf"
+    ENV_DIR_ABS="$(cd "$(dirname "${ENV_DIR}")" && pwd)/$(basename "${ENV_DIR}")"
+
+    if [ -f "${MAKECONF}" ]; then
+        # Also fix any existing relative paths from previous runs
+        sed -i.bak \
+            -e "s|^CC = \./envs/.*bin/x86_64-apple-darwin13.4.0-clang|CC = ${ENV_DIR_ABS}/bin/x86_64-apple-darwin13.4.0-clang|" \
+            -e "s|^CC = x86_64-apple-darwin13.4.0-clang|CC = ${ENV_DIR_ABS}/bin/x86_64-apple-darwin13.4.0-clang|" \
+            -e "s|^CXX = \./envs/.*bin/x86_64-apple-darwin13.4.0-clang++|CXX = ${ENV_DIR_ABS}/bin/x86_64-apple-darwin13.4.0-clang++|" \
+            -e "s|^CXX = x86_64-apple-darwin13.4.0-clang++|CXX = ${ENV_DIR_ABS}/bin/x86_64-apple-darwin13.4.0-clang++|" \
+            -e "s|^CXX11 = \./envs/.*bin/x86_64-apple-darwin13.4.0-clang++|CXX11 = ${ENV_DIR_ABS}/bin/x86_64-apple-darwin13.4.0-clang++|" \
+            -e "s|^CXX11 = x86_64-apple-darwin13.4.0-clang++|CXX11 = ${ENV_DIR_ABS}/bin/x86_64-apple-darwin13.4.0-clang++|" \
+            -e "s|^CXX14 = \./envs/.*bin/x86_64-apple-darwin13.4.0-clang++|CXX14 = ${ENV_DIR_ABS}/bin/x86_64-apple-darwin13.4.0-clang++|" \
+            -e "s|^CXX14 = x86_64-apple-darwin13.4.0-clang++|CXX14 = ${ENV_DIR_ABS}/bin/x86_64-apple-darwin13.4.0-clang++|" \
+            -e "s|^CXX17 = \./envs/.*bin/x86_64-apple-darwin13.4.0-clang++|CXX17 = ${ENV_DIR_ABS}/bin/x86_64-apple-darwin13.4.0-clang++|" \
+            -e "s|^CXX17 = x86_64-apple-darwin13.4.0-clang++|CXX17 = ${ENV_DIR_ABS}/bin/x86_64-apple-darwin13.4.0-clang++|" \
+            -e "s|^CXX20 = \./envs/.*bin/x86_64-apple-darwin13.4.0-clang++|CXX20 = ${ENV_DIR_ABS}/bin/x86_64-apple-darwin13.4.0-clang++|" \
+            -e "s|^CXX20 = x86_64-apple-darwin13.4.0-clang++|CXX20 = ${ENV_DIR_ABS}/bin/x86_64-apple-darwin13.4.0-clang++|" \
+            -e "s|^FC = \./envs/.*bin/x86_64-apple-darwin13.4.0-gfortran|FC = ${ENV_DIR_ABS}/bin/x86_64-apple-darwin13.4.0-gfortran|" \
+            -e "s|^FC = x86_64-apple-darwin13.4.0-gfortran|FC = ${ENV_DIR_ABS}/bin/x86_64-apple-darwin13.4.0-gfortran|" \
+            "${MAKECONF}"
+
+        # Remove '-pipe' from Fortran compilation flags to avoid Rosetta issues
+        perl -0pi -e 's/ -pipe/ /g' "${MAKECONF}"
+
+        echo "✓ Patched R Makeconf with absolute compiler paths: ${ENV_DIR_ABS}/bin"
+        echo "✓ Removed problematic -pipe flag from Fortran toolchain"
+    fi
+
+    # Use workspace-local temp dir so seatbelt doesn't block linking (e.g. nlopt build)
+    export TMPDIR="${ENV_DIR}/tmp"
+    mkdir -p "${TMPDIR}"
+
+    # Force x86_64 for R
+    arch -x86_64 /bin/bash -c "'$RSCRIPT' install_packages.R"
+else
+    echo "Installing R packages from install_packages.R..."
+    "$RSCRIPT" install_packages.R
+fi
+
+# Create marker file on successful installation
+touch "$R_PACKAGES_MARKER"
+echo "✓ R packages installation complete - created marker file"
 
 echo ""
 echo "========================================="
