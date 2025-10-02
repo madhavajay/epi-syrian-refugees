@@ -62,12 +62,22 @@ echo ""
 
 # Detect architecture and set platform
 ARCH=$(uname -m)
-if [[ "$ARCH" == "arm64" ]]; then
+OS=$(uname -s)
+
+if [[ "$ARCH" == "arm64" ]] && [[ "$OS" == "Darwin" ]]; then
     echo "⚠ Detected ARM64 (Apple Silicon) - forcing x86_64 architecture"
     export CONDA_SUBDIR=osx-64
     PLATFORM_FLAG="--platform=osx-64"
+elif [[ "$OS" == "Darwin" ]]; then
+    echo "✓ Detected x86_64 macOS"
+    export CONDA_SUBDIR=osx-64
+    PLATFORM_FLAG="--platform=osx-64"
+elif [[ "$OS" == "Linux" ]]; then
+    echo "✓ Detected Linux ($ARCH)"
+    export CONDA_SUBDIR=linux-64
+    PLATFORM_FLAG="--platform=linux-64"
 else
-    echo "✓ Detected x86_64 architecture"
+    echo "✓ Detected $OS ($ARCH)"
     PLATFORM_FLAG=""
 fi
 
@@ -82,7 +92,11 @@ else
     if [ -f "environment.yml" ]; then
         echo "✓ Found environment.yml - creating environment..."
         echo ""
-        CONDA_SUBDIR=osx-64 micromamba create -p "$ENV_DIR" -f environment.yml -y
+        if [[ "$ARCH" == "arm64" ]] && [[ "$OS" == "Darwin" ]]; then
+            CONDA_SUBDIR=osx-64 micromamba create -p "$ENV_DIR" -f environment.yml -y
+        else
+            micromamba create -p "$ENV_DIR" -f environment.yml -y
+        fi
         echo "✓ Environment created"
     else
         echo "ℹ No environment.yml found - will install packages manually"
@@ -92,54 +106,98 @@ fi
 
 # Create environment from scratch if needed (when no spec file)
 if [ ! -d "$ENV_DIR" ] && [ ! -f "$SPEC_FILE" ]; then
-    echo "Creating micromamba environment (x86_64)..."
+    if [[ "$ARCH" == "arm64" ]] && [[ "$OS" == "Darwin" ]]; then
+        echo "Creating micromamba environment (x86_64 via Rosetta)..."
+    else
+        echo "Creating micromamba environment ($ARCH)..."
+    fi
     echo "Optimization: strict channel priority, conda-forge + bioconda only"
     echo ""
 
     # Use strict channel priority to avoid backtracking
     # conda-forge + bioconda is the recommended combo for R + bioinformatics
-    CONDA_SUBDIR=osx-64 micromamba create -p "$ENV_DIR" \
-        -c conda-forge \
-        -c bioconda \
-        --strict-channel-priority \
-        -y \
-        r-base=4.4 \
-        r-essentials \
-        r-devtools \
-        bioconductor-minfi \
-        bioconductor-sesame \
-        bioconductor-sesamedata \
-        bioconductor-epidish \
-        r-here \
-        r-kableextra \
-        r-tidyverse \
-        r-data.table \
-        r-ggplot2 \
-        r-dplyr \
-        r-tidyr \
-        r-stringr \
-        r-magrittr \
-        r-dt \
-        r-purrr \
-        r-forcats \
-        r-rebus \
-        make \
-        automake \
-        autoconf \
-        libtool \
-        pkg-config \
-        compilers \
-        perl
+    if [[ "$ARCH" == "arm64" ]] && [[ "$OS" == "Darwin" ]]; then
+        CONDA_SUBDIR=osx-64 micromamba create -p "$ENV_DIR" \
+            -c conda-forge \
+            -c bioconda \
+            --strict-channel-priority \
+            -y \
+            r-base=4.4 \
+            r-essentials \
+            r-devtools \
+            bioconductor-minfi \
+            bioconductor-sesame \
+            bioconductor-sesamedata \
+            bioconductor-epidish \
+            r-here \
+            r-kableextra \
+            r-tidyverse \
+            r-data.table \
+            r-ggplot2 \
+            r-dplyr \
+            r-tidyr \
+            r-stringr \
+            r-magrittr \
+            r-dt \
+            r-purrr \
+            r-forcats \
+            r-rebus \
+            make \
+            automake \
+            autoconf \
+            libtool \
+            pkg-config \
+            compilers \
+            perl
+    else
+        micromamba create -p "$ENV_DIR" \
+            -c conda-forge \
+            -c bioconda \
+            --strict-channel-priority \
+            -y \
+            r-base=4.4 \
+            r-essentials \
+            r-devtools \
+            bioconductor-minfi \
+            bioconductor-sesame \
+            bioconductor-sesamedata \
+            bioconductor-epidish \
+            r-here \
+            r-kableextra \
+            r-tidyverse \
+            r-data.table \
+            r-ggplot2 \
+            r-dplyr \
+            r-tidyr \
+            r-stringr \
+            r-magrittr \
+            r-dt \
+            r-purrr \
+            r-forcats \
+            r-rebus \
+            make \
+            automake \
+            autoconf \
+            libtool \
+            pkg-config \
+            compilers \
+            perl
+    fi
 
-    echo "✓ Base environment created (x86_64)"
+    echo "✓ Base environment created"
 
     # Set conda subdir permanently for this environment
-    if [[ "$ARCH" == "arm64" ]]; then
+    if [[ "$ARCH" == "arm64" ]] && [[ "$OS" == "Darwin" ]]; then
         # Create .condarc file in environment to force x86_64
         cat > "${ENV_DIR}/.condarc" <<EOF
 subdir: osx-64
 EOF
-        echo "✓ Environment configured for x86_64 packages"
+        echo "✓ Environment configured for x86_64 packages (Rosetta)"
+    elif [[ "$OS" == "Linux" ]]; then
+        cat > "${ENV_DIR}/.condarc" <<EOF
+subdir: linux-64
+EOF
+        echo "✓ Environment configured for linux-64 packages"
     fi
 
     # Save explicit spec for faster future rebuilds
@@ -158,7 +216,7 @@ fi
 
 # Some heavy dependencies are more reliable from micromamba binaries than CRAN/Bioconductor
 echo "Ensuring pre-built binaries for core compiled R dependencies..."
-MICROMAMBA_PKGS=(r-nloptr r-igraph pkg-config cairo)
+MICROMAMBA_PKGS=(r-nloptr r-igraph r-cairo r-xml r-kableextra pkg-config cairo)
 
 # bioconductor-gdsfmt currently ships Linux-only binaries; skip on macOS to avoid solver failures
 if [[ "$(uname -s)" != "Darwin" ]]; then
@@ -166,7 +224,7 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
 fi
 
 if [[ "${#MICROMAMBA_PKGS[@]}" -gt 0 ]]; then
-    if [[ "$ARCH" == "arm64" ]]; then
+    if [[ "$ARCH" == "arm64" ]] && [[ "$OS" == "Darwin" ]]; then
         CONDA_SUBDIR=osx-64 micromamba install -p "$ENV_DIR" -y "${MICROMAMBA_PKGS[@]}" || true
     else
         micromamba install -p "$ENV_DIR" -y "${MICROMAMBA_PKGS[@]}" || true
@@ -188,13 +246,14 @@ if [ ! -f "$RSCRIPT" ]; then
     exit 1
 fi
 
-# Ensure x86_64 for R package installation on ARM
-if [[ "$ARCH" == "arm64" ]]; then
+# Ensure x86_64 for R package installation on ARM Mac, standard installation on Linux
+ENV_DIR_ABS="$(cd "$(dirname "${ENV_DIR}")" && pwd)/$(basename "${ENV_DIR}")"
+
+if [[ "$ARCH" == "arm64" ]] && [[ "$OS" == "Darwin" ]]; then
     echo "Installing R packages (forcing x86_64 via Rosetta)..."
 
     # Patch R's Makeconf to use absolute paths to compilers
     MAKECONF="${ENV_DIR}/lib/R/etc/Makeconf"
-    ENV_DIR_ABS="$(cd "$(dirname "${ENV_DIR}")" && pwd)/$(basename "${ENV_DIR}")"
 
     if [ -f "${MAKECONF}" ]; then
         # Also fix any existing relative paths from previous runs
@@ -267,6 +326,14 @@ if [[ "$ARCH" == "arm64" ]]; then
     arch -x86_64 /bin/bash -c "'$RSCRIPT' install_packages.R"
 else
     echo "Installing R packages from install_packages.R..."
+
+    # Add environment bin to PATH so compilers are found
+    export PATH="${ENV_DIR_ABS}/bin:${PATH}"
+
+    # Set PKG_CONFIG_PATH for Linux
+    export PKG_CONFIG_PATH="${ENV_DIR_ABS}/lib/pkgconfig:${ENV_DIR_ABS}/share/pkgconfig:${PKG_CONFIG_PATH}"
+
+    # Run Rscript with PATH set
     "$RSCRIPT" install_packages.R
 fi
 

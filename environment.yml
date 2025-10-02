@@ -2,9 +2,8 @@ name: epigenetic-violence-analysis
 channels:
   - conda-forge
   - bioconda
-  - defaults
 dependencies:
-  - python=3.13
+  - python=3.11
   - r-base=4.4
   - r-essentials
   - bioconductor-minfi
@@ -16,3 +15,10 @@ dependencies:
   - r-glmnet
   - jupyterlab
   - notebook
+  - xorg-libx11  # X11 headers needed for Cairo on Linux
+  - cmake  # Needed for building some R packages
+  - r-cairo  # Cairo graphics - precompiled to avoid X11 header issues
+  - r-igraph  # Graph library - precompiled to avoid compilation issues
+  - r-nloptr  # Optimizer - precompiled to avoid cmake issues
+  - r-xml  # XML parser - precompiled to avoid libxml2 issues
+  - r-kableextra  # Table formatting - precompiled to avoid svglite/zlib issues
