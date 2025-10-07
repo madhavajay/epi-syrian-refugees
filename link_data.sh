@@ -19,6 +19,7 @@ if [ ! -d "$SOURCE_DIR" ]; then
     echo "  Run ./extract.sh first to unpack the raw data"
     exit 1
 fi
+SOURCE_ABS=$(cd "$SOURCE_DIR" && pwd)
 
 ln -sf "../${SOURCE_DIR}/cMulligan_SampleManifest160.csv" supp_data/
 ln -sf "../${SOURCE_DIR}/IGP_SwabType.csv" supp_data/
@@ -35,12 +36,11 @@ echo ""
 echo "Step 2: Linking sample sheet, Horvath outputs, and scripts"
 echo ""
 
-ln -sf "${SOURCE_DIR}/cMulligan_SampleSheet160.csv" data/
-ln -sf "../${SOURCE_DIR}/igp_horvath_betas_20211104.csv" output/
-ln -sf "../${SOURCE_DIR}/igp_horvath_samplesheet_20211104.csv" output/
-ln -sf "../${SOURCE_DIR}/igp_horvath_betas_20211104.output.csv" output/
-ln -sf "../${SOURCE_DIR}/igp_quality_control_20230222.Rmd" script/
-ln -sf "${SOURCE_DIR}/igp.Rproj" igp.Rproj
+ln -sf "$SOURCE_ABS/cMulligan_SampleSheet160.csv" data/
+ln -sf "$SOURCE_ABS/igp_horvath_betas_20211104.csv" output/
+ln -sf "$SOURCE_ABS/igp_horvath_samplesheet_20211104.csv" output/
+ln -sf "$SOURCE_ABS/igp_horvath_betas_20211104.output.csv" output/
+ln -sf "$SOURCE_ABS/igp_quality_control_20230222.Rmd" script/
 
 echo "  ✓ Core analysis files linked"
 

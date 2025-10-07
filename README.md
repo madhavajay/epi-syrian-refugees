@@ -4,6 +4,40 @@
 
 Epigenetic analysis of violence trauma across three generations of Syrian families exposed to armed conflict.
 
+## Docker Image
+
+Pre-built R environment with all dependencies:
+
+```bash
+# Pull from GitHub Container Registry
+docker pull ghcr.io/madhavajay/epi-syrian-refugees:latest
+
+# Drop into the container
+docker run -it --rm -v $(pwd):/workspace ghcr.io/madhavajay/epi-syrian-refugees:latest
+
+# Run a stage (test mode) directly via the wrapper
+./run_stage1.sh --test --docker
+# or the full pipeline
+./run_all_stages.sh --docker
+```
+
+> **Tip:** These commands require access to the local Docker daemon. If you see
+> `permission denied` errors, make sure Docker Desktop/Engine is running and
+> your user is allowed to use the socket (you may need to prefix the command
+> with `sudo` on Linux).
+
+Or build locally:
+
+```bash
+# Build with optimized multi-stage caching
+./docker/docker_build.sh
+
+# Clean build (remove all cache)
+./docker/docker_build.sh --clean
+```
+
+See `docker/` directory for more options and documentation.
+
 **Original Publication:**
 
 Mulligan CJ, Nusinovici S, Messer LB, et al. Intergenerational epigenetic inheritance of violence trauma in Syrian refugee families. *Sci Rep*. 2025;15:3621. Published 2025 Feb 4.
@@ -82,6 +116,10 @@ Run the entire 4-stage analysis pipeline:
 
 # Test mode (quick validation, 2-4 hours, 32-64 GB RAM)
 ./run_all_stages.sh --test
+
+# Run inside Docker image
+./run_all_stages.sh --docker            # full
+./run_stage2.sh --test --docker         # single stage smoke test
 
 # Run specific stage only
 ./run_all_stages.sh --stage 2

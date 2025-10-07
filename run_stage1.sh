@@ -4,8 +4,42 @@ set -e  # Exit on error
 
 # Parse command line arguments
 TEST_MODE=false
-if [[ "$1" == "--test" ]]; then
-    TEST_MODE=true
+DOCKER_MODE=false
+NO_DOCKER_FLAG=false
+PASSTHRU_ARGS=()
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --test)
+            TEST_MODE=true
+            PASSTHRU_ARGS+=(--test)
+            shift
+            ;;
+        --docker)
+            DOCKER_MODE=true
+            shift
+            ;;
+        --no-docker)
+            NO_DOCKER_FLAG=true
+            shift
+            ;;
+        *)
+            echo "Unknown option: $1"
+            echo "Usage: $0 [--test] [--docker]"
+            exit 1
+            ;;
+    esac
+done
+
+if [ "$DOCKER_MODE" = true ] && [ "$NO_DOCKER_FLAG" = false ]; then
+    docker run --rm -v "$(pwd)":/workspace -w /workspace -e IGP_CORES="${IGP_CORES:-}" -e IGP_TEST_MODE="$([ "$TEST_MODE" = true ] && echo 1 || echo 0)" \
+        epi-syrian-refugees ./link_data.sh
+    docker run --rm -v "$(pwd)":/workspace -w /workspace -e IGP_CORES="${IGP_CORES:-}" -e IGP_TEST_MODE="$([ "$TEST_MODE" = true ] && echo 1 || echo 0)" \
+        epi-syrian-refugees Rscript -e "setwd('/workspace'); system('./run_stage1_rscript.R ${PASSTHRU_ARGS[*]}')"
+    exit $?
+fi
+
+if [ "$TEST_MODE" = true ]; then
     echo "========================================="
     echo "Stage 1: Quality Control (TEST MODE)"
     echo "Epigenetic Violence Analysis"
@@ -55,10 +89,41 @@ echo "✓ Directory structure set up"
 # Check if analysis script exists
 if [ ! -f "$RMD_PATH_BASE" ]; then
     echo "✗ Analysis script not found: $RMD_PATH_BASE"
-    echo "  Run ./link_data.sh to create symlinks"
-    exit 1
+    if [ "$NO_DOCKER_FLAG" = false ]; then
+        echo "  Attempting to refresh symlinks via ./link_data.sh"
+        if ./link_data.sh; then
+            if [ ! -f "$RMD_PATH_BASE" ]; then
+                echo "  ✗ Script still missing after link refresh"
+                exit 1
+            fi
+        else
+            echo "  ✗ Failed to refresh symlinks; please run ./link_data.sh manually"
+            exit 1
+        fi
+    else
+        echo "  Run ./link_data.sh to create symlinks"
+        exit 1
+    fi
 fi
 echo "✓ Analysis script found"
+
+# Ensure clustering chunk handles small sample sizes
+python3 - <<'PY'
+from pathlib import Path
+blocks = []
+for path_str in [
+    'script/igp_quality_control_20230222.Rmd',
+    'script/igp_quality_control_20230222_test.Rmd',
+]:
+    path = Path(path_str)
+    if not path.exists():
+        continue
+    text = path.read_text()
+    old = """plot(fit) # display dendogram\nrect.hclust(fit,k=54)\n\ngroups <- cutree(fit, k=54)\n\ngroups <- as.data.frame(groups)\n\ngroups <- cbind(groups, metadata)\n"""
+    if old in text:
+        new = """plot(fit) # display dendogram\nsample_count <- length(fit$order)\n\nif (is.na(sample_count) || sample_count < 2) {\n    warning(\"Not enough samples for clustering rectangles; skipping cutree step for this dataset\")\n    groups <- data.frame()\n} else {\n    k_target <- min(54, max(2, sample_count - 1))\n    rect.hclust(fit, k = k_target)\n\n    groups <- cutree(fit, k = k_target)\n\n    groups <- as.data.frame(groups)\n\n    groups <- cbind(groups, metadata)\n}\n"""
+        path.write_text(text.replace(old, new, 1))
+PY
 
 # Ensure IDAT symlinks are refreshed from downloads when available
 if [ -d "$IDAT_DOWNLOAD_DIR" ]; then

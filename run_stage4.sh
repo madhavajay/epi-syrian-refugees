@@ -4,8 +4,42 @@ set -e  # Exit on error
 
 # Parse command line arguments
 TEST_MODE=false
-if [[ "$1" == "--test" ]]; then
-    TEST_MODE=true
+DOCKER_MODE=false
+NO_DOCKER_FLAG=false
+PASSTHRU_ARGS=()
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --test)
+            TEST_MODE=true
+            PASSTHRU_ARGS+=(--test)
+            shift
+            ;;
+        --docker)
+            DOCKER_MODE=true
+            shift
+            ;;
+        --no-docker)
+            NO_DOCKER_FLAG=true
+            shift
+            ;;
+        *)
+            echo "Unknown option: $1"
+            echo "Usage: $0 [--test] [--docker]"
+            exit 1
+            ;;
+    esac
+done
+
+if [ "$DOCKER_MODE" = true ] && [ "$NO_DOCKER_FLAG" = false ]; then
+    docker run --rm -v "$(pwd)":/workspace -w /workspace -e IGP_CORES="${IGP_CORES:-}" -e IGP_TEST_MODE="$([ "$TEST_MODE" = true ] && echo 1 || echo 0)" \
+        epi-syrian-refugees ./link_data.sh
+    docker run --rm -v "$(pwd)":/workspace -w /workspace -e IGP_CORES="${IGP_CORES:-}" -e IGP_TEST_MODE="$([ "$TEST_MODE" = true ] && echo 1 || echo 0)" \
+        epi-syrian-refugees Rscript -e "setwd('/workspace'); system('./run_stage4_rscript.R ${PASSTHRU_ARGS[*]}')"
+    exit $?
+fi
+
+if [ "$TEST_MODE" = true ]; then
     echo "========================================="
     echo "Stage 4: Age Acceleration Analysis (TEST MODE)"
     echo "Epigenetic Violence Analysis"
@@ -33,6 +67,8 @@ if [ ! -d "$ENV_DIR" ]; then
     echo "  Run ./setup_environment.sh first"
     exit 1
 fi
+ENV_ABS_PATH=$(cd "$ENV_DIR" && pwd)
+export DYLD_FALLBACK_LIBRARY_PATH="$(pwd)/libs:${DYLD_FALLBACK_LIBRARY_PATH:-}"
 echo "✓ Environment found"
 
 # Check if directories are set up
@@ -160,14 +196,21 @@ else
     echo ""
 fi
 
-# Activate environment
-eval "$(micromamba shell hook --shell bash)"
-micromamba activate "$ENV_DIR"
-
-# Check architecture and set up x86_64 if needed
+# Prepare Rscript runner
 ARCH=$(uname -m)
+RSCRIPT_BIN="$ENV_ABS_PATH/bin/Rscript"
+if [ ! -x "$RSCRIPT_BIN" ]; then
+    echo "✗ Rscript binary not found: $RSCRIPT_BIN"
+    echo "  Ensure ./setup_environment.sh completed successfully"
+    exit 1
+fi
+
+export PATH="$ENV_ABS_PATH/bin:$PATH"
+
+RSCRIPT_CMD=("$RSCRIPT_BIN")
 if [[ "$ARCH" == "arm64" ]]; then
     export CONDA_SUBDIR=osx-64
+    RSCRIPT_CMD=(arch -x86_64 "$RSCRIPT_BIN")
     echo "Running on Apple Silicon - using Rosetta 2 for x86_64 compatibility"
     echo ""
 fi
@@ -189,13 +232,12 @@ if [ "$TEST_MODE" = true ]; then
     echo ""
 fi
 
-if [[ "$ARCH" == "arm64" ]]; then
-    arch -x86_64 Rscript -e "rmarkdown::render('script/igp_epigenetic_age_analysis_v6.Rmd')"
-else
-    Rscript -e "rmarkdown::render('script/igp_epigenetic_age_analysis_v6.Rmd')"
-fi
+RENDER_CMD="rmarkdown::render('script/igp_epigenetic_age_analysis_v6.Rmd')"
 
+set +e
+"${RSCRIPT_CMD[@]}" -e "$RENDER_CMD"
 render_exit_code=$?
+set -e
 
 # Get end time
 end_time=$(date +%s)

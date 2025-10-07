@@ -1,0 +1,71 @@
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Environment directories
+envs/
+.conda/
+r_package_cache/
+
+# Logs
+*.log
+setup_*.log
+logs/
+
+# Temporary files
+*.tmp
+.DS_Store
+.Rhistory
+.RData
+.Ruserdata
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Build artifacts
+*.o
+*.so
+*.dylib
+*.dll
+
+# Large directories - data and downloads
+data/
+supp_data/
+output/
+downloads/
+libs/
+script/
+scripts/
+*.csv
+*.RData
+*.rds
+*.tar.gz
+*.zip
+
+# Docker build cache
+.docker-cache/
+docker_build_*.log
+
+# Documentation (optional - remove if you want docs in container)
+*.md
+!README_DOCKER.md
+
+# macOS-specific files
+tools/char_traits_patch.h
+install_meffil_only.R
+install_cairo_only.R
+install_gdsfmt_only.R
+
+# Specs and environment markers
+environment-spec.txt
+.r_packages_installed
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
