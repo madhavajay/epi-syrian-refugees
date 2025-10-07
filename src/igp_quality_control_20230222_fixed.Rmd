@@ -671,22 +671,39 @@ toAverage <-by(toAverage$uid,toAverage$sampleID,print)
 # Get raw betas first
 
 if (file.exists(here("output","raw_betas.rds"))){
-  
+
   rawBetas <- readRDS(here("output","raw_betas.rds"))
-  
+
 } else {
-  
-  cl <- makeCluster(16)
+
+  # Set locale for multibyte string handling
+  Sys.setlocale("LC_ALL", "C")
+
+  # Use fewer cores to avoid overwhelming system
+  n_cores <- min(16, parallel::detectCores() - 1)
+  cl <- makeCluster(n_cores)
   registerDoParallel(cl)
   clusterExport(cl, c("readIDATpair","getBetas","prefixMaskButCG"))
-  
-  rawBetas <- do.call(cbind, parLapply(cl,samplesheet$Basename, function(pfx) { 
-    getBetas(prefixMaskButCG(readIDATpair(pfx))) 
-    
+
+  # Export locale settings to workers
+  clusterEvalQ(cl, {
+    Sys.setlocale("LC_ALL", "C")
+  })
+
+  rawBetas <- do.call(cbind, parLapply(cl,samplesheet$Basename, function(pfx) {
+    tryCatch({
+      getBetas(prefixMaskButCG(readIDATpair(pfx)))
+    }, error = function(e) {
+      warning(paste("Failed to read IDAT:", pfx, "-", e$message))
+      return(NULL)
+    })
     }))
-  
+
   stopCluster(cl)
-  
+
+  # Remove any NULL results from failed reads
+  rawBetas <- rawBetas[, !sapply(rawBetas, is.null), drop = FALSE]
+
   saveRDS(rawBetas, file = here("output","raw_betas.rds"))
 
 }
@@ -695,23 +712,37 @@ if (file.exists(here("output","raw_betas.rds"))){
 # Next get SeSame betas
 
 if (file.exists(here("output","preprocessed_betas.rds"))){
-  
+
   ppBetas <- readRDS(here("output","preprocessed_betas.rds"))
-  
+
 } else {
-  
-  cl <- makeCluster(16)
+
+  # Use fewer cores to avoid overwhelming system
+  n_cores <- min(16, parallel::detectCores() - 1)
+  cl <- makeCluster(n_cores)
   registerDoParallel(cl)
   clusterExport(cl, c("readIDATpair","getBetas","prefixMaskButCG",
                       "inferInfiniumIChannel","dyeBiasNL","pOOBAH","noob"))
-  
-  ppBetas <- do.call(cbind, parLapply(cl,samplesheet$Basename, function(pfx) { 
-    getBetas(noob(pOOBAH(dyeBiasNL(inferInfiniumIChannel(prefixMaskButCG(readIDATpair(pfx))))))) 
 
+  # Export locale settings to workers
+  clusterEvalQ(cl, {
+    Sys.setlocale("LC_ALL", "C")
+  })
+
+  ppBetas <- do.call(cbind, parLapply(cl,samplesheet$Basename, function(pfx) {
+    tryCatch({
+      getBetas(noob(pOOBAH(dyeBiasNL(inferInfiniumIChannel(prefixMaskButCG(readIDATpair(pfx)))))))
+    }, error = function(e) {
+      warning(paste("Failed to preprocess IDAT:", pfx, "-", e$message))
+      return(NULL)
+    })
     }))
-  
+
   stopCluster(cl)
-  
+
+  # Remove any NULL results from failed reads
+  ppBetas <- ppBetas[, !sapply(ppBetas, is.null), drop = FALSE]
+
   saveRDS(ppBetas, file = here("output","preprocessed_betas.rds"))
 
 }
