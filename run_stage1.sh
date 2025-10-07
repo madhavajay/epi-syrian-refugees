@@ -77,7 +77,16 @@ ENV_ABS_PATH=$(cd "$ENV_DIR" && pwd)
 RMD_PATH_BASE="script/igp_quality_control_20230222.Rmd"
 RMD_PATH_TEST="src/igp_quality_control_20230222_test.Rmd"
 RMD_PATH_FIXED="src/igp_quality_control_20230222_fixed.Rmd"
-RMD_PATH="$RMD_PATH_BASE"
+
+# Select appropriate R markdown file based on flags
+if [ "$TEST_MODE" = true ]; then
+    RMD_PATH="$RMD_PATH_TEST"
+elif [ "$FIXED_MODE" = true ]; then
+    RMD_PATH="$RMD_PATH_FIXED"
+else
+    RMD_PATH="$RMD_PATH_BASE"
+fi
+
 export IGP_CORES=${IGP_CORES:-8}
 export IGP_TEST_MODE=0
 export DYLD_FALLBACK_LIBRARY_PATH="$(pwd)/libs:${DYLD_FALLBACK_LIBRARY_PATH:-}"
@@ -146,12 +155,8 @@ if [ -d "$IDAT_DOWNLOAD_DIR" ]; then
 
             trimmed_name=$(echo "$base_name" | sed 's/^GSM[0-9]*_//')
             if [[ "$trimmed_name" != "$base_name" ]]; then
+                # Only create .gz symlink - R packages handle .gz directly
                 ln -sf "$IDAT_DOWNLOAD_DIR/$base_name" "data/${trimmed_name}"
-
-                trimmed_no_gz="${trimmed_name%.gz}"
-                if [[ "$trimmed_no_gz" != "$trimmed_name" ]]; then
-                    ln -sf "$IDAT_DOWNLOAD_DIR/$base_name" "data/${trimmed_no_gz}"
-                fi
             fi
         done < <(find "$IDAT_DOWNLOAD_DIR" -maxdepth 1 -type f -name "*.idat.gz")
         echo "✓ IDAT symlinks refreshed"
@@ -234,6 +239,32 @@ echo "Starting Stage 1 QC Analysis"
 echo "========================================="
 echo ""
 
+# Clean up intermediate RDS files from previous failed runs
+echo "Cleaning intermediate cache files..."
+intermediate_files=(
+    "output/raw_betas.rds"
+    "output/preprocessed_betas.rds"
+    "output/noob_betas.rds"
+)
+
+removed_count=0
+for file in "${intermediate_files[@]}"; do
+    if [ -f "$file" ]; then
+        # Check if file is very small (likely corrupted from failed run)
+        size=$(wc -c < "$file" 2>/dev/null || echo "0")
+        if [ "$size" -lt 1000 ]; then
+            rm -f "$file"
+            echo "  ✓ Removed corrupted cache: $file (${size} bytes)"
+            removed_count=$((removed_count + 1))
+        fi
+    fi
+done
+
+if [ $removed_count -eq 0 ]; then
+    echo "  ✓ No corrupted cache files found"
+fi
+echo ""
+
 # Set up test mode if requested
 if [ "$TEST_MODE" = true ]; then
     echo "Test Mode Configuration:"
@@ -269,15 +300,14 @@ else
     echo ""
 fi
 
-# Override with fixed version if requested
+# Validate fixed version if requested
 if [ "$FIXED_MODE" = true ]; then
     echo "⚙ Using fixed version of QC script"
-    if [ ! -f "$RMD_PATH_FIXED" ]; then
-        echo "✗ Fixed R Markdown not found: $RMD_PATH_FIXED"
+    if [ ! -f "$RMD_PATH" ]; then
+        echo "✗ Fixed R Markdown not found: $RMD_PATH"
         echo "  The fixed version should be tracked in git"
         exit 1
     fi
-    RMD_PATH="$RMD_PATH_FIXED"
     echo ""
 fi
 

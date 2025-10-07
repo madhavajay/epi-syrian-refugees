@@ -667,6 +667,18 @@ toAverage <-by(toAverage$uid,toAverage$sampleID,print)
 
 ```{r readIdats_reps}
 
+# Ensure essential sesame data is cached (required for IDAT reading)
+# Only cache specific files needed for EPIC arrays (faster and more reliable than bulk download)
+cat("Checking sesame reference data cache...\n")
+options(timeout = 600)  # Increase timeout for slow connections
+
+# Cache essential files with error handling (exact names from error messages)
+tryCatch(sesameDataCache('EPIC.address'), error = function(e)
+  cat(paste("Note: EPIC.address cache issue:", e$message, "\n")))
+tryCatch(sesameDataCache('idatSignature'), error = function(e)
+  cat(paste("Note: idatSignature cache issue:", e$message, "\n")))
+
+cat("✓ Essential sesame reference data cached\n")
 
 # Get raw betas first
 
@@ -676,33 +688,126 @@ if (file.exists(here("output","raw_betas.rds"))){
 
 } else {
 
+  # Write to debug file to track execution
+  writeLines(paste("ENTERING IDAT READ BLOCK AT", Sys.time()), here("output", "debug_trace.txt"))
+
   # Set locale for multibyte string handling
   Sys.setlocale("LC_ALL", "C")
+
+  # Debug: Check sample paths
+  cat("\n=== IDAT Reading Debug Info ===\n")
+  flush.console()
+  cat(paste("Total samples:", nrow(samplesheet), "\n"))
+  cat(paste("First 3 basenames:\n"))
+  for (i in 1:min(3, nrow(samplesheet))) {
+    cat(paste("  [", i, "]", samplesheet$Basename[i], "\n"))
+  }
+
+  # Check if files exist
+  first_sample <- samplesheet$Basename[1]
+  grn_file <- paste0(first_sample, "_Grn.idat")
+  red_file <- paste0(first_sample, "_Red.idat")
+  grn_gz <- paste0(grn_file, ".gz")
+  red_gz <- paste0(red_file, ".gz")
+
+  cat(paste("\nChecking first sample:", first_sample, "\n"))
+  cat(paste("  Grn exists:", file.exists(grn_file), "| Grn.gz exists:", file.exists(grn_gz), "\n"))
+  cat(paste("  Red exists:", file.exists(red_file), "| Red.gz exists:", file.exists(red_gz), "\n"))
+
+  # Try to read first sample as a test
+  cat("\nAttempting test read of first sample...\n")
+  test_result <- tryCatch({
+    test_idat <- readIDATpair(first_sample)
+    cat(paste("✓ readIDATpair succeeded\n"))
+    writeLines("readIDATpair: SUCCESS", here("output", "debug_trace.txt"), sep = "\n")
+
+    test_masked <- prefixMaskButCG(test_idat)
+    cat(paste("✓ prefixMaskButCG succeeded\n"))
+    writeLines("prefixMaskButCG: SUCCESS", here("output", "debug_trace.txt"), sep = "\n")
+
+    test_betas <- getBetas(test_masked)
+    cat(paste("✓ getBetas succeeded - length:", length(test_betas), "\n"))
+    writeLines(paste("getBetas: SUCCESS - length:", length(test_betas)), here("output", "debug_trace.txt"), sep = "\n")
+    TRUE
+  }, error = function(e) {
+    msg <- paste("Test read FAILED:", e$message)
+    cat(paste("✗", msg, "\n"))
+    writeLines(msg, here("output", "debug_trace.txt"), sep = "\n")
+    FALSE
+  })
+
+  if (!test_result) {
+    stop("Test read of first sample failed. Check output/debug_trace.txt for details.")
+  }
+
+  cat("==============================\n\n")
 
   # Use fewer cores to avoid overwhelming system
   n_cores <- min(16, parallel::detectCores() - 1)
   cl <- makeCluster(n_cores)
   registerDoParallel(cl)
-  clusterExport(cl, c("readIDATpair","getBetas","prefixMaskButCG"))
 
-  # Export locale settings to workers
+  # Load required packages in each worker - THIS IS CRITICAL!
+  cat("Loading packages in parallel workers...\n")
   clusterEvalQ(cl, {
+    library(sesame)
+    library(here)
     Sys.setlocale("LC_ALL", "C")
   })
+  cat("✓ Packages loaded in workers\n")
 
-  rawBetas <- do.call(cbind, parLapply(cl,samplesheet$Basename, function(pfx) {
+  rawBetas_list <- parLapply(cl,samplesheet$Basename, function(pfx) {
     tryCatch({
+      # Check if files exist before attempting read
+      grn <- paste0(pfx, "_Grn.idat.gz")
+      red <- paste0(pfx, "_Red.idat.gz")
+      if (!file.exists(grn) || !file.exists(red)) {
+        stop(paste("Missing files -",
+                   "Grn:", file.exists(grn),
+                   "Red:", file.exists(red)))
+      }
       getBetas(prefixMaskButCG(readIDATpair(pfx)))
     }, error = function(e) {
-      warning(paste("Failed to read IDAT:", pfx, "-", e$message))
-      return(NULL)
+      return(list(error = e$message, pfx = pfx))
     })
-    }))
+    })
 
   stopCluster(cl)
 
-  # Remove any NULL results from failed reads
-  rawBetas <- rawBetas[, !sapply(rawBetas, is.null), drop = FALSE]
+  # Separate successful reads from errors
+  is_error <- sapply(rawBetas_list, function(x) is.list(x) && !is.null(x$error))
+  errors <- rawBetas_list[is_error]
+  successful_reads <- rawBetas_list[!is_error]
+
+  # Report errors if any
+  if (length(errors) > 0) {
+    cat(paste("\n=== IDAT Read Errors (", length(errors), "samples failed) ===\n"))
+    for (i in 1:min(10, length(errors))) {
+      err <- errors[[i]]
+      cat(paste("  Sample", i, ":", basename(err$pfx), "\n"))
+      cat(paste("    Error:", err$error, "\n"))
+    }
+    if (length(errors) > 10) {
+      cat(paste("  ... and", length(errors) - 10, "more errors\n"))
+    }
+    cat("=====================================\n\n")
+  }
+
+  if (length(successful_reads) == 0) {
+    cat("\n✗ All IDAT reads failed!\n")
+    cat(paste("  Total samples attempted:", nrow(samplesheet), "\n"))
+    cat(paste("  All returned errors\n"))
+    if (length(errors) > 0) {
+      cat("\nShowing first error in detail:\n")
+      cat(paste("  Path:", errors[[1]]$pfx, "\n"))
+      cat(paste("  Error:", errors[[1]]$error, "\n"))
+    }
+    stop("All IDAT reads failed. See error details above.")
+  }
+
+  cat(paste("\n✓ Successfully read", length(successful_reads), "of", nrow(samplesheet), "samples\n\n"))
+
+  rawBetas <- do.call(cbind, successful_reads)
 
   saveRDS(rawBetas, file = here("output","raw_betas.rds"))
 
@@ -721,27 +826,55 @@ if (file.exists(here("output","preprocessed_betas.rds"))){
   n_cores <- min(16, parallel::detectCores() - 1)
   cl <- makeCluster(n_cores)
   registerDoParallel(cl)
-  clusterExport(cl, c("readIDATpair","getBetas","prefixMaskButCG",
-                      "inferInfiniumIChannel","dyeBiasNL","pOOBAH","noob"))
 
-  # Export locale settings to workers
+  # Load required packages in each worker
+  cat("Loading packages in parallel workers for preprocessing...\n")
   clusterEvalQ(cl, {
+    library(sesame)
+    library(here)
     Sys.setlocale("LC_ALL", "C")
   })
+  cat("✓ Packages loaded in workers\n")
 
-  ppBetas <- do.call(cbind, parLapply(cl,samplesheet$Basename, function(pfx) {
+  ppBetas_list <- parLapply(cl,samplesheet$Basename, function(pfx) {
     tryCatch({
+      grn <- paste0(pfx, "_Grn.idat.gz")
+      red <- paste0(pfx, "_Red.idat.gz")
+      if (!file.exists(grn) || !file.exists(red)) {
+        stop(paste("Missing files -",
+                   "Grn:", file.exists(grn),
+                   "Red:", file.exists(red)))
+      }
       getBetas(noob(pOOBAH(dyeBiasNL(inferInfiniumIChannel(prefixMaskButCG(readIDATpair(pfx)))))))
     }, error = function(e) {
-      warning(paste("Failed to preprocess IDAT:", pfx, "-", e$message))
-      return(NULL)
+      return(list(error = e$message, pfx = pfx))
     })
-    }))
+    })
 
   stopCluster(cl)
 
-  # Remove any NULL results from failed reads
-  ppBetas <- ppBetas[, !sapply(ppBetas, is.null), drop = FALSE]
+  # Separate successful reads from errors
+  is_error <- sapply(ppBetas_list, function(x) is.list(x) && !is.null(x$error))
+  errors <- ppBetas_list[is_error]
+  successful_reads <- ppBetas_list[!is_error]
+
+  if (length(errors) > 0) {
+    message(paste("\n=== Preprocessed IDAT Read Errors (", length(errors), "samples failed) ==="))
+    for (i in 1:min(3, length(errors))) {
+      err <- errors[[i]]
+      message(paste("  Sample:", basename(err$pfx), "- Error:", err$error))
+    }
+    if (length(errors) > 3) message(paste("  ... and", length(errors) - 3, "more"))
+    message("=====================================\n")
+  }
+
+  if (length(successful_reads) == 0) {
+    stop("All preprocessed IDAT reads failed.")
+  }
+
+  message(paste("Successfully preprocessed", length(successful_reads), "of", nrow(samplesheet), "samples"))
+
+  ppBetas <- do.call(cbind, successful_reads)
 
   saveRDS(ppBetas, file = here("output","preprocessed_betas.rds"))
 
@@ -1407,14 +1540,26 @@ mage$SampleID <- sub('X', '', mage$SampleID)
 # These are the samples run in duplicate by accident:
 skin_blood_age <- merge(mistakes,mage,by.x="Sample_Name",by.y="SampleID",all.x=TRUE,all.y=FALSE)
 
+# Build table with dynamic row styling based on actual number of mistakes
+n_skin_blood <- nrow(skin_blood_age)
+skin_blood_table <- skin_blood_age[c("uid","Sample_Name","Age","DNAmAgeSkinBloodClock")] %>%
+  kbl(caption="3-13-F2-F is a perfect genotype match with 3-13-F3-2-F and \n 3-17-F3-2-M is a perfect genotype match with 1-2-F3-1-M") %>%
+  kable_styling("hover",full_width=F)
 
-skin_blood_age <- skin_blood_age[c("uid","Sample_Name","Age","DNAmAgeSkinBloodClock")] %>% 
-  kbl(caption="3-13-F2-F is a perfect genotype match with 3-13-F3-2-F and \n 3-17-F3-2-M is a perfect genotype match with 1-2-F3-1-M") %>% 
-  kable_styling("hover",full_width=F) %>% 
-  row_spec(1:2, bold = T, color = "black", background = "skyblue") %>% 
-  row_spec(3:4, bold = T, color = "black", background = "salmon")
+# Apply row styling based on actual number of rows
+if (n_skin_blood >= 2) {
+    skin_blood_table <- skin_blood_table %>%
+      row_spec(1:min(2, n_skin_blood), bold = T, color = "black", background = "skyblue")
+}
+if (n_skin_blood >= 4) {
+    skin_blood_table <- skin_blood_table %>%
+      row_spec(3:min(4, n_skin_blood), bold = T, color = "black", background = "salmon")
+} else if (n_skin_blood == 3) {
+    skin_blood_table <- skin_blood_table %>%
+      row_spec(3, bold = T, color = "black", background = "salmon")
+}
 
-skin_blood_age
+skin_blood_table
 
 # 3-13-F2-F is a perfect genotype match with 3-13-F3-2-F
 
