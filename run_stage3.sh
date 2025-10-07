@@ -38,7 +38,7 @@ echo "✓ Environment found"
 # Check if directories are set up
 if [ ! -d "data" ] || [ ! -d "output" ] || [ ! -d "script" ] || [ ! -d "supp_data" ]; then
     echo "✗ Directory structure not set up"
-    echo "  Run ./extract.sh first"
+    echo "  Run ./extract.sh followed by ./link_data.sh"
     exit 1
 fi
 echo "✓ Directory structure set up"
