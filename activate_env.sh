@@ -11,7 +11,16 @@ if [ ! -d "$ENV_DIR" ]; then
     exit 1
 fi
 
-eval "$(micromamba shell hook --shell bash)"
+# Detect current shell
+if [ -n "$ZSH_VERSION" ]; then
+    CURRENT_SHELL="zsh"
+elif [ -n "$BASH_VERSION" ]; then
+    CURRENT_SHELL="bash"
+else
+    CURRENT_SHELL="bash"  # fallback
+fi
+
+eval "$(micromamba shell hook --shell $CURRENT_SHELL)"
 micromamba activate "$ENV_DIR"
 
 # Ensure x86_64 architecture on ARM Macs
@@ -25,11 +34,7 @@ fi
 
 echo ""
 echo "R version:"
-if [[ "$ARCH" == "arm64" ]]; then
-    arch -x86_64 R --version | head -1
-else
-    R --version | head -1
-fi
+micromamba run -p "$ENV_DIR" R --version 2>/dev/null | head -1 || echo "  (run commands with: micromamba run -p $ENV_DIR R)"
 echo ""
 echo "Architecture: $(uname -m) → using x86_64 packages"
 echo ""

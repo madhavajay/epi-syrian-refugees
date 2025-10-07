@@ -4,6 +4,7 @@ set -e  # Exit on error
 
 # Parse command line arguments
 TEST_MODE=false
+FIXED_MODE=false
 DOCKER_MODE=false
 NO_DOCKER_FLAG=false
 PASSTHRU_ARGS=()
@@ -13,6 +14,10 @@ while [[ $# -gt 0 ]]; do
         --test)
             TEST_MODE=true
             PASSTHRU_ARGS+=(--test)
+            shift
+            ;;
+        --fixed)
+            FIXED_MODE=true
             shift
             ;;
         --docker)
@@ -25,7 +30,7 @@ while [[ $# -gt 0 ]]; do
             ;;
         *)
             echo "Unknown option: $1"
-            echo "Usage: $0 [--test] [--docker]"
+            echo "Usage: $0 [--test] [--fixed] [--docker]"
             exit 1
             ;;
     esac
@@ -70,7 +75,8 @@ fi
 
 ENV_ABS_PATH=$(cd "$ENV_DIR" && pwd)
 RMD_PATH_BASE="script/igp_quality_control_20230222.Rmd"
-RMD_PATH_TEST="script/igp_quality_control_20230222_test.Rmd"
+RMD_PATH_TEST="src/igp_quality_control_20230222_test.Rmd"
+RMD_PATH_FIXED="src/igp_quality_control_20230222_fixed.Rmd"
 RMD_PATH="$RMD_PATH_BASE"
 export IGP_CORES=${IGP_CORES:-8}
 export IGP_TEST_MODE=0
@@ -113,7 +119,8 @@ from pathlib import Path
 blocks = []
 for path_str in [
     'script/igp_quality_control_20230222.Rmd',
-    'script/igp_quality_control_20230222_test.Rmd',
+    'src/igp_quality_control_20230222_test.Rmd',
+    'src/igp_quality_control_20230222_fixed.Rmd',
 ]:
     path = Path(path_str)
     if not path.exists():
@@ -259,6 +266,18 @@ else
     echo "Estimated runtime: 8-12 hours"
     echo "RAM required: 128 GB"
     echo "Output: script/igp_quality_control_20230222.html"
+    echo ""
+fi
+
+# Override with fixed version if requested
+if [ "$FIXED_MODE" = true ]; then
+    echo "⚙ Using fixed version of QC script"
+    if [ ! -f "$RMD_PATH_FIXED" ]; then
+        echo "✗ Fixed R Markdown not found: $RMD_PATH_FIXED"
+        echo "  The fixed version should be tracked in git"
+        exit 1
+    fi
+    RMD_PATH="$RMD_PATH_FIXED"
     echo ""
 fi
 
