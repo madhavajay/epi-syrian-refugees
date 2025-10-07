@@ -20,8 +20,10 @@ dir.create(download_cache, showWarnings = FALSE, recursive = TRUE)
 options(keep.source.pkgs = TRUE)
 Sys.setenv(R_INSTALL_STAGED = "false")  # Disable staged install to keep sources
 
-# Ensure libc++ still sees legacy char_traits specialisations needed by gdsfmt
-patch_header <- normalizePath(file.path("tools", "char_traits_patch.h"), mustWork = TRUE)
+# Ensure libc++ still sees legacy char_traits specialisations needed by gdsfmt (macOS only)
+is_macos <- .Platform$OS.type == "unix" && Sys.info()["sysname"] == "Darwin"
+patch_header_path <- file.path("tools", "char_traits_patch.h")
+has_patch_header <- file.exists(patch_header_path)
 
 append_flag <- function(var, flag) {
   current <- Sys.getenv(var)
@@ -32,21 +34,29 @@ append_flag <- function(var, flag) {
   }
 }
 
-# Ensure C/C++ compilation uses original R entry points (avoids Rf_* remapping)
-for (var in c("PKG_CPPFLAGS", "CPPFLAGS", "CFLAGS", "PKG_CFLAGS")) {
-  append_flag(var, "-DR_NO_REMAP")
-}
+# Apply macOS-specific compilation fixes (char_traits patch for gdsfmt compatibility)
+if (is_macos && has_patch_header) {
+  patch_header <- normalizePath(patch_header_path, mustWork = TRUE)
 
-# Inject compatibility header for C++ compilation units only
-for (var in c(
-  "CXXFLAGS", "PKG_CXXFLAGS",
-  "CXX11FLAGS", "PKG_CXX11FLAGS",
-  "CXX14FLAGS", "PKG_CXX14FLAGS",
-  "CXX17FLAGS", "PKG_CXX17FLAGS",
-  "CXX20FLAGS", "PKG_CXX20FLAGS"
-)) {
-  append_flag(var, "-DR_NO_REMAP")
-  append_flag(var, paste("-include", patch_header))
+  # Ensure C/C++ compilation uses original R entry points (avoids Rf_* remapping)
+  for (var in c("PKG_CPPFLAGS", "CPPFLAGS", "CFLAGS", "PKG_CFLAGS")) {
+    append_flag(var, "-DR_NO_REMAP")
+  }
+
+  # Inject compatibility header for C++ compilation units only
+  for (var in c(
+    "CXXFLAGS", "PKG_CXXFLAGS",
+    "CXX11FLAGS", "PKG_CXX11FLAGS",
+    "CXX14FLAGS", "PKG_CXX14FLAGS",
+    "CXX17FLAGS", "PKG_CXX17FLAGS",
+    "CXX20FLAGS", "PKG_CXX20FLAGS"
+  )) {
+    append_flag(var, "-DR_NO_REMAP")
+    append_flag(var, paste("-include", patch_header))
+  }
+  cat("✓ Applied char_traits compatibility patch for macOS\n")
+} else {
+  cat("✓ Linux detected - using standard R compilation flags\n")
 }
 
 # Prefer binary packages to avoid slow compilation
@@ -74,8 +84,9 @@ cran_packages <- c(
   "jsonlite", "data.table", "Rcpp", "broom", "dplyr", "DT", "forcats",
   "ggplot2", "here", "magrittr", "purrr", "stringr", "tidyr",
   # Missing dependencies first (needed by other packages)
-  "mvtnorm", "igraph", "Cairo", "multcomp", "lme4", "DNAcopy",
-  "kableExtra", "pls",
+  # Note: igraph, Cairo, nloptr, XML, kableExtra are installed via conda to avoid compilation issues on Linux
+  # On macOS these compile fine from CRAN, but we use conda for cross-platform consistency
+  "mvtnorm", "multcomp", "lme4", "DNAcopy", "pls",
   "flashClust", "leaps", "car", "ggpubr", "BayesFactor", "DescTools",
   "partykit",
   # Visualization
@@ -137,11 +148,7 @@ if (!requireNamespace("remotes", quietly = TRUE)) {
   install.packages("remotes", destdir = download_cache)
 }
 
-# Fallback for kableExtra (not yet published for current R release)
-if (!requireNamespace("kableExtra", quietly = TRUE)) {
-  cat("Installing kableExtra from GitHub (CRAN build unavailable)...\n")
-  remotes::install_github("haozhu233/kableExtra")
-}
+# kableExtra is now in the CRAN packages list above
 
 # Install ewastools from GitHub
 if (!requireNamespace("ewastools", quietly = TRUE)) {
@@ -154,8 +161,20 @@ if (!requireNamespace("ewastools", quietly = TRUE)) {
 # Install meffil from GitHub
 if (!requireNamespace("meffil", quietly = TRUE)) {
   cat("Installing meffil from GitHub...\n")
+
+  # First ensure SmartSVA is installed (XML should be from conda)
+  if (!requireNamespace("SmartSVA", quietly = TRUE)) {
+    cat("Installing SmartSVA dependency...\n")
+    tryCatch({
+      install.packages("SmartSVA", destdir = download_cache)
+    }, error = function(e) {
+      cat("⚠ SmartSVA installation failed:", e$message, "\n")
+    })
+  }
+
+  # Now install meffil, telling it to upgrade dependencies but not XML (from conda)
   tryCatch({
-    remotes::install_github("perishky/meffil")
+    remotes::install_github("perishky/meffil", upgrade = "never")
   }, error = function(e) {
     cat("⚠ meffil installation failed:", e$message, "\n")
   })
@@ -178,7 +197,11 @@ if (!requireNamespace("methylCIPHER", quietly = TRUE)) {
 # Install ggmosaic (needs ggplot2 ≥ 4 support from GitHub)
 if (!requireNamespace("ggmosaic", quietly = TRUE)) {
   cat("Installing ggmosaic from GitHub (ggplot2 >= 4 support)...\n")
-  remotes::install_github("haleyjeppson/ggmosaic")
+  tryCatch({
+    remotes::install_github("haleyjeppson/ggmosaic")
+  }, error = function(e) {
+    cat("⚠ ggmosaic installation failed (optional package)\n")
+  })
 } else {
   cat("✓ ggmosaic already installed\n")
 }

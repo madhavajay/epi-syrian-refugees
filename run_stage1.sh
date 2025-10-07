@@ -216,6 +216,12 @@ if [[ "$ARCH" == "arm64" ]]; then
     echo ""
 fi
 
+# Configure parallel processing
+NUM_CORES=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
+echo "Configuring parallel processing with $NUM_CORES cores"
+export MAKEFLAGS="-j${NUM_CORES}"
+export MC_CORES="${NUM_CORES}"
+
 # Get start time
 start_time=$(date +%s)
 echo "Started at: $(date)"
@@ -225,7 +231,8 @@ echo ""
 echo "Rendering R Markdown file..."
 echo "----------------------------------------"
 
-RENDER_CMD="rmarkdown::render('$RMD_PATH', output_file = 'igp_quality_control_20230222.html', output_dir = 'script')"
+# Set up R environment for parallel processing
+RENDER_CMD="options(mc.cores = ${NUM_CORES}); library(parallel); rmarkdown::render('$RMD_PATH', output_file = 'igp_quality_control_20230222.html', output_dir = 'script')"
 
 set +e
 "${RSCRIPT_CMD[@]}" -e "$RENDER_CMD"
