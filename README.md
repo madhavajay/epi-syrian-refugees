@@ -93,11 +93,13 @@ Run the entire 4-stage analysis pipeline:
 ```bash
 ./download.sh              # Downloads 4 figshare datasets + 320 IDAT files
 ./download.sh --skip-verify  # Skip file integrity checks (faster)
+# Raw ZIPs land in downloads/, IDATs in downloads/idat/
 ```
 
 2. **Extract and set up directories**
 ```bash
-./extract.sh               # Extracts ZIPs, creates symlinks
+./extract.sh               # Extracts ZIP archives under data/
+./link_data.sh             # Creates directory structure and symlinks
 ```
 
 3. **Set up R environment**

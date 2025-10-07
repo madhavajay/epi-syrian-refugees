@@ -28,20 +28,26 @@ echo ""
 
 # Check if environment exists
 ENV_DIR="./envs/epigenetic-violence-analysis"
-RMD_PATH_BASE="script/igp_quality_control_20230222.Rmd"
-RMD_PATH_TEST="script/igp_quality_control_20230222_test.Rmd"
-RMD_PATH="$RMD_PATH_BASE"
 if [ ! -d "$ENV_DIR" ]; then
     echo "✗ Environment not found: $ENV_DIR"
     echo "  Run ./setup_environment.sh first"
     exit 1
 fi
+
+ENV_ABS_PATH=$(cd "$ENV_DIR" && pwd)
+RMD_PATH_BASE="script/igp_quality_control_20230222.Rmd"
+RMD_PATH_TEST="script/igp_quality_control_20230222_test.Rmd"
+RMD_PATH="$RMD_PATH_BASE"
+export IGP_CORES=${IGP_CORES:-8}
+export IGP_TEST_MODE=0
+export DYLD_FALLBACK_LIBRARY_PATH="$(pwd)/libs:${DYLD_FALLBACK_LIBRARY_PATH:-}"
+IDAT_DOWNLOAD_DIR="$(pwd)/downloads/idat"
 echo "✓ Environment found"
 
 # Check if directories are set up
 if [ ! -d "supp_data" ] || [ ! -d "output" ] || [ ! -d "script" ]; then
     echo "✗ Directory structure not set up"
-    echo "  Run ./extract.sh first"
+    echo "  Run ./extract.sh followed by ./link_data.sh"
     exit 1
 fi
 echo "✓ Directory structure set up"
@@ -49,13 +55,39 @@ echo "✓ Directory structure set up"
 # Check if analysis script exists
 if [ ! -f "$RMD_PATH_BASE" ]; then
     echo "✗ Analysis script not found: $RMD_PATH_BASE"
-    echo "  Run ./extract.sh to create symlinks"
+    echo "  Run ./link_data.sh to create symlinks"
     exit 1
 fi
 echo "✓ Analysis script found"
 
+# Ensure IDAT symlinks are refreshed from downloads when available
+if [ -d "$IDAT_DOWNLOAD_DIR" ]; then
+    mkdir -p data/idat
+    find data/idat -maxdepth 1 -type l -exec rm -f {} \;
+    find data -maxdepth 1 -type l \( -name "*.idat.gz" -o -name "*.idat" \) -exec rm -f {} \;
+
+    if compgen -G "$IDAT_DOWNLOAD_DIR/*.idat.gz" > /dev/null; then
+        echo "Linking IDAT files from downloads/..."
+        while IFS= read -r idat_path; do
+            base_name=$(basename "$idat_path")
+            ln -sf "$IDAT_DOWNLOAD_DIR/$base_name" "data/idat/$base_name"
+
+            trimmed_name=$(echo "$base_name" | sed 's/^GSM[0-9]*_//')
+            if [[ "$trimmed_name" != "$base_name" ]]; then
+                ln -sf "$IDAT_DOWNLOAD_DIR/$base_name" "data/${trimmed_name}"
+
+                trimmed_no_gz="${trimmed_name%.gz}"
+                if [[ "$trimmed_no_gz" != "$trimmed_name" ]]; then
+                    ln -sf "$IDAT_DOWNLOAD_DIR/$base_name" "data/${trimmed_no_gz}"
+                fi
+            fi
+        done < <(find "$IDAT_DOWNLOAD_DIR" -maxdepth 1 -type f -name "*.idat.gz")
+        echo "✓ IDAT symlinks refreshed"
+    fi
+fi
+
 # Check IDAT files
-idat_count=$(find data -type f -name "*.idat.gz" 2>/dev/null | wc -l | tr -d ' ')
+idat_count=$(find data -name "*.idat.gz" 2>/dev/null | wc -l | tr -d ' ')
 
 if [ "$TEST_MODE" = true ]; then
     # In test mode, we only need 8 IDAT files (4 samples × 2 channels)
@@ -80,28 +112,6 @@ else
         fi
     else
         echo "✓ Found $idat_count IDAT files"
-    fi
-fi
-
-# Ensure data/ has direct pointers to the IDAT archives (expected by R scripts)
-if [ -d "data/idat" ]; then
-    # Remove placeholder glob link if it was created before downloads finished
-    if [ -L "data/*.idat.gz" ]; then
-        rm -f "data/*.idat.gz"
-    fi
-
-    if compgen -G "data/idat/*.idat.gz" > /dev/null; then
-        echo "Linking IDAT files into data/..."
-        while IFS= read -r idat_path; do
-            base_name=$(basename "$idat_path")
-            ln -sf "idat/${base_name}" "data/${base_name}"
-
-            trimmed_name=$(echo "$base_name" | sed 's/^GSM[0-9]*_//')
-            if [[ "$trimmed_name" != "$base_name" ]]; then
-                ln -sf "idat/${base_name}" "data/${trimmed_name}"
-            fi
-        done < <(find data/idat -maxdepth 1 -type f -name "*.idat.gz")
-        echo "✓ IDAT links refreshed"
     fi
 fi
 
@@ -141,7 +151,7 @@ done
 if [ $missing_files -gt 0 ]; then
     echo ""
     echo "✗ $missing_files critical files missing"
-    echo "  Run ./extract.sh to set up symlinks"
+    echo "  Run ./link_data.sh to set up symlinks"
     exit 1
 fi
 echo "✓ All critical files present"
@@ -156,6 +166,7 @@ echo ""
 if [ "$TEST_MODE" = true ]; then
     echo "Test Mode Configuration:"
     echo "  - Creating test sample sheet (4 samples)..."
+    export IGP_TEST_MODE=1
 
     # Create test sample sheet
     ./create_test_samplesheet.sh
@@ -169,7 +180,7 @@ if [ "$TEST_MODE" = true ]; then
     echo "  - Using low-sample variant of QC notebook"
     if [ ! -f "$RMD_PATH_TEST" ]; then
         echo "✗ Test R Markdown not found: $RMD_PATH_TEST"
-        echo "  Re-run setup to restore extracted scripts"
+        echo "  Re-run link_data.sh to restore extracted scripts"
         exit 1
     fi
     RMD_PATH="$RMD_PATH_TEST"
@@ -186,14 +197,21 @@ else
     echo ""
 fi
 
-# Activate environment
-eval "$(micromamba shell hook --shell bash)"
-micromamba activate "$ENV_DIR"
-
-# Check architecture and set up x86_64 if needed
+# Prepare Rscript runner
 ARCH=$(uname -m)
+RSCRIPT_BIN="$ENV_ABS_PATH/bin/Rscript"
+if [ ! -x "$RSCRIPT_BIN" ]; then
+    echo "✗ Rscript binary not found in $RSCRIPT_BIN"
+    echo "  Ensure ./setup_environment.sh completed successfully"
+    exit 1
+fi
+
+export PATH="$ENV_ABS_PATH/bin:$PATH"
+
+RSCRIPT_CMD=("$RSCRIPT_BIN")
 if [[ "$ARCH" == "arm64" ]]; then
     export CONDA_SUBDIR=osx-64
+    RSCRIPT_CMD=(arch -x86_64 "$RSCRIPT_BIN")
     echo "Running on Apple Silicon - using Rosetta 2 for x86_64 compatibility"
     echo ""
 fi
@@ -217,11 +235,7 @@ echo "----------------------------------------"
 RENDER_CMD="options(mc.cores = ${NUM_CORES}); library(parallel); rmarkdown::render('$RMD_PATH', output_file = 'igp_quality_control_20230222.html', output_dir = 'script')"
 
 set +e
-if [[ "$ARCH" == "arm64" ]]; then
-    arch -x86_64 Rscript -e "$RENDER_CMD"
-else
-    Rscript -e "$RENDER_CMD"
-fi
+"${RSCRIPT_CMD[@]}" -e "$RENDER_CMD"
 render_exit_code=$?
 set -e
 

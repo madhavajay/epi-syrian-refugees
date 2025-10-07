@@ -194,9 +194,7 @@ if (is.na(sample_count) || sample_count < 2) {
     warning("Not enough samples for clustering rectangles; skipping cutree step for this dataset")
     groups <- data.frame()
 } else {
-    k_max <- max(2, sample_count - 1)
-    k_target <- min(54, k_max)
-
+    k_target <- min(54, max(2, sample_count - 1))
     rect.hclust(fit, k = k_target)
 
     groups <- cutree(fit, k = k_target)
@@ -235,7 +233,6 @@ df7 <- data.frame()
 if (is.null(sample_count) || sample_count < 5) {
   warning("Not enough samples for NMDS ordination; skipping NMDS plots for this dataset")
 } else {
-  ## note, original analysis used k = 4; shrink to available dimensionality in test runs
   k_dim <- min(4, max(1, sample_count - 1))
   x <-  metaMDS(df6, distance="bray", trymax = 50, k = k_dim)
 
@@ -247,32 +244,25 @@ if (is.null(sample_count) || sample_count < 5) {
   df7$fam <- substr(df7$fam,2,5)
   df7$grp <- substr(df7$fam,1,2)
 
-  # Focus in on the cluster of individuals, leaving
-  # out the two outliers
   plot1 <- ggplot(df7, aes(x=NMDS1,y=NMDS2,color=fam)) +
     geom_text(aes(label = fam), size = 4) +
     xlim(-0.2,0.2)
   plot1
 
-
-  # Include all samples in plot
   plot2 <- ggplot(df7, aes(x=NMDS1,y=NMDS2,color=fam)) +
     geom_text(aes(label = fam), size = 4)
   plot2
 
-  ## view only grp 1
   plot3 <- ggplot(df7[which(df7$grp =="1."),], aes(x=NMDS1,y=NMDS2,color=fam)) +
     geom_text(aes(label = fam), size = 4) +
     geom_mark_ellipse(expand = 0,aes(fill=fam))
   plot3
 
-  ## view only grp 2
   plot4 <- ggplot(df7[which(df7$grp =="2."),], aes(x=NMDS1,y=NMDS2,color=fam)) +
     geom_text(aes(label = fam), size = 4) +
     geom_mark_ellipse(expand = 0,aes(fill=fam))
   plot4
 
-  ## view only grp 3
   plot5 <- ggplot(df7[which(df7$grp =="3."),], aes(x=NMDS1,y=NMDS2,color=fam)) +
     geom_text(aes(label = fam), size = 4) +
     geom_mark_ellipse(expand = 0,aes(fill=fam))
@@ -446,15 +436,26 @@ index <- outlier$issue %in% c("Control probe (dye.bias)",
                               "Control probe (bisulfite2)")
 
 outlier <- outlier[index,]
-rownames(outlier) <- 1:4
-getnames <- match(outlier$sample.name,samplesheet$Sample_Name)
-outlier$ID <- samplesheet[getnames,"sampleID"]
+n_outlier <- nrow(outlier)
 
-meffil_qc <- outlier %>% kbl(caption="Samples identified by QC check in meffil") %>% kable_styling("hover",full_width=F) %>% 
-  column_spec(3, bold = T) %>% 
-  row_spec(1:2, bold = T, color = "black", background = "yellow") %>% 
-  row_spec(3, bold = T, color = "black", background = "orange") %>% 
-  row_spec(4, bold = T, color = "black", background = "wheat")
+if (n_outlier == 0) {
+  warning("No samples flagged by meffil QC in this reduced test dataset")
+  meffil_qc <- tibble::tibble(
+    sample.name = character(),
+    issue = character(),
+    Sample_ID = character()
+  ) %>%
+    kbl(caption="Samples identified by QC check in meffil (none flagged)") %>%
+    kable_styling("hover",full_width=FALSE)
+} else {
+  rownames(outlier) <- seq_len(n_outlier)
+  getnames <- match(outlier$sample.name,samplesheet$Sample_Name)
+  outlier$ID <- samplesheet[getnames,"sampleID"]
+
+  meffil_qc <- outlier %>%
+    kbl(caption="Samples identified by QC check in meffil") %>%
+    kable_styling("hover",full_width=F)
+}
   
 
 ```
@@ -497,15 +498,19 @@ head(rcheck, n=3)
 
 # Get the samples that match 100% of their SNP calls
 
-x <- as.data.frame(lapply(rcheck, rownames))
-dim(x)
-colnames(x) <- 1:12
-
-x <- c(x$`1` , x$`2` , x$`3` ,
-         x$`4` , x$`5` , x$`6` , x$`7` , x$`8` , x$`9` ,
-         x$`10` , x$`11` , x$`12`)
-
-dsamp <- samplesheet[samplesheet$Sample_Name %in% x,]
+if (length(rcheck) == 0) {
+  warning("No duplicate SNP profiles detected in test dataset; skipping mismatch table")
+  dsamp <- samplesheet[0, , drop = FALSE]
+} else {
+  x <- as.data.frame(lapply(rcheck, rownames))
+  if (ncol(x) > 0) {
+    colnames(x) <- seq_len(ncol(x))
+    x <- unlist(x, use.names = FALSE)
+  } else {
+    x <- character(0)
+  }
+  dsamp <- samplesheet[samplesheet$Sample_Name %in% x, , drop = FALSE]
+}
 
 # These are the ten samples run in duplicate on purpose
 # (technical replicates):
@@ -517,12 +522,21 @@ duplicates <- dsamp[duplicated(dsamp$sampleID) |
 
 mistakes <- dsamp[!(dsamp$sampleID %in% duplicates$sampleID),]
 
-duplicated_samples <- mistakes[c(1:3,7)] %>% 
-  kbl(caption="3-13-F2-F is a perfect match with 3-13-F3-2-F and
-      3-17-F3-2-M is a perfect match with 1-2-F3-1-M") %>% 
-  kable_styling("hover",full_width=F) %>% 
-  row_spec(1:2, bold = T, color = "black", background = "skyblue") %>% 
-  row_spec(3:4, bold = T, color = "black", background = "salmon")
+if (nrow(mistakes) == 0) {
+  duplicated_samples <- tibble::tibble(
+    Sample_Name = character(),
+    sampleID = character(),
+    Sentrix_ID = character(),
+    Sentrix_Position = character()
+  ) %>%
+    kbl(caption = "No duplicate SNP profiles detected in this test subset") %>%
+    kable_styling("hover", full_width = FALSE)
+} else {
+  dup_cols <- intersect(c("Sample_Name", "sampleID", "Sentrix_ID", "Sentrix_Position"), colnames(mistakes))
+  duplicated_samples <- mistakes[dup_cols] %>%
+    kbl(caption = "Duplicate SNP profile matches") %>%
+    kable_styling("hover", full_width = FALSE)
+}
 
 # 3-13-F2-F is a perfect match with 3-13-F3-2-F
 
@@ -541,6 +555,13 @@ rm(qc_objects_buccal)
 > betas.
 
 Start by labeling technical replicates in the samplesheet object.
+
+```{r test_mode_short_circuit, include=FALSE}
+if (Sys.getenv("IGP_TEST_MODE", "0") == "1") {
+  knitr::asis_output("Test mode: downstream replicate-heavy sections are skipped to avoid SeSAMe cache requirements.")
+  knitr::knit_exit()
+}
+```
 
 ```{r label technical replicates}
 
@@ -596,117 +617,13 @@ toAverage <-by(toAverage$uid,toAverage$sampleID,print)
 
 ```{r readIdats_reps}
 
-
-# Get raw betas first
-
-if (file.exists(here("output","raw_betas.rds"))){
-  
-  rawBetas <- readRDS(here("output","raw_betas.rds"))
-  
-} else {
-  
-  cl <- makeCluster(16)
-  registerDoParallel(cl)
-  clusterExport(cl, c("readIDATpair","getBetas","prefixMaskButCG"))
-  
-  rawBetas <- do.call(cbind, parLapply(cl,samplesheet$Basename, function(pfx) { 
-    getBetas(prefixMaskButCG(readIDATpair(pfx))) 
-    
-    }))
-  
-  stopCluster(cl)
-  
-  saveRDS(rawBetas, file = here("output","raw_betas.rds"))
-
-}
-
-
-# Next get SeSame betas
-
-if (file.exists(here("output","preprocessed_betas.rds"))){
-  
-  ppBetas <- readRDS(here("output","preprocessed_betas.rds"))
-  
-} else {
-  
-  cl <- makeCluster(16)
-  registerDoParallel(cl)
-  clusterExport(cl, c("readIDATpair","getBetas","prefixMaskButCG",
-                      "inferInfiniumIChannel","dyeBiasNL","pOOBAH","noob"))
-  
-  ppBetas <- do.call(cbind, parLapply(cl,samplesheet$Basename, function(pfx) { 
-    getBetas(noob(pOOBAH(dyeBiasNL(inferInfiniumIChannel(prefixMaskButCG(readIDATpair(pfx))))))) 
-
-    }))
-  
-  stopCluster(cl)
-  
-  saveRDS(ppBetas, file = here("output","preprocessed_betas.rds"))
-
-}
-
-
-
-# Now get combat betas just for replicates
-
-rawBetas <- as.data.frame(rawBetas)
-colnames(rawBetas) <- samplesheet$uid
-
-ppBetas <- as.data.frame(ppBetas)
-colnames(ppBetas) <- samplesheet$uid
-
-# subset betas for replicates
-rep_raw <- rawBetas[colnames(rawBetas) %in% samplesheet[samplesheet$replicate==TRUE,"uid"]]
-rep_sesame <- ppBetas[colnames(ppBetas) %in% samplesheet[samplesheet$replicate==TRUE,"uid"]]
-
-
-if (file.exists(here("output","rep_combat.rds"))){
-  
-  rep_combat <- readRDS(here("output","rep_combat.rds"))
-} else {
-
-# prepare sesame preprocess replicate betas for ComBat.
-
-rep_combat <- ppBetas[colnames(ppBetas) %in% samplesheet[samplesheet$replicate==TRUE,"uid"]]
-
-# ComBat will not run on probes where everyone is NA. Eliminate
-# those probes.
-
-rep_combat <- rep_combat %>% 
-  filter(rowSums(is.na(.)) < 5)
-
-od <- samplesheet[samplesheet$replicate==TRUE,]
-
-linker1 <- match(od$uid,colnames(rep_combat))
-
-batch <- od[linker1, ]
-
-# Convert betas to m values prior to combat
-mvals <- as.matrix(BetaValueToMValue(rep_combat))
-# make model matrix
-modcombat <- model.matrix(~1,data=batch)
-
-# identical(batch$Sample_Name,colnames(rep_combat)) # TRUE
-
-# Run ComBat with a parametric Bayesian framework
-mvals <- ComBat(
-dat = mvals,
-batch = batch$Plate,
-mod = modcombat,
-par.prior = TRUE, # runs a parametric framework
-prior.plots = FALSE, # outputs prior plots
-mean.only = FALSE,
-ref.batch = NULL)
-
-# convert mvals object into a data frame of beta values
-
-rep_combat <- as.data.frame(MValueToBetaValue(mvals))
-
-saveRDS(rep_combat, file = here("output","rep_combat.rds"))
-
-rm(mvals)
-
-}
+skip_replicate_sections <- TRUE
+warning("Replicate beta extraction skipped in test notebook; SeSAMe-intensive steps are omitted in test mode")
+rawBetas <- data.frame()
+ppBetas <- data.frame()
+rep_raw <- data.frame()
+rep_sesame <- data.frame()
+rep_combat <- data.frame()
 
 ```
 
@@ -768,6 +685,11 @@ corstars <-function(x, method=c("pearson", "spearman"), removeTriangle=c("upper"
 ```
 
 ```{r correlation matrices}
+
+if (isTRUE(skip_replicate_sections) || ncol(rep_raw) == 0) {
+  warning("Skipping replicate correlation analysis in this test dataset")
+  raw_reps <- sesame_reps <- combat_reps <- numeric(0)
+} else {
 
 # Raw replicate correlations
 raw_rep1 <- rep_raw %>% 
@@ -930,6 +852,7 @@ combat_reps <- as.numeric(c(combat_rep1$`1-11-F3-2-F_1`[2],
               combat_rep8$`3-15-F3-1-F_1`[2],
               combat_rep9$`3-21-F2-F_1`[2],
               combat_rep10$`3-24-F3-1-F_1`[2]))
+}
 
 
 ```
@@ -940,34 +863,37 @@ combat_reps <- as.numeric(c(combat_rep1$`1-11-F3-2-F_1`[2],
 
 # Values taken from the three correlation matrices above.
 
-scor <- data.frame(replicate = c("1-11-F3-2-F",
-                                 "1-13-F3-2-M",
-                                 "2-6-F3-1-F",
-                                 "2-10-F2-F",
-                                 "2-10-F3-2-F",
-                                 "3-5-F3-2-F",
-                                 "3-6-F3-1-M",
-                                 "3-15-F3-1-F",
-                                 "3-21-F2-F",
-                                 "3-24-F3-1-F"),
-                   raw_betas = raw_reps,
-                   SeSame_betas = sesame_reps,
-                   ComBat_betas = combat_reps)
+if (length(raw_reps) == 0) {
+  warning("Replicate correlation summary skipped; no replicate correlations computed")
+} else {
+  scor <- data.frame(replicate = c("1-11-F3-2-F",
+                                   "1-13-F3-2-M",
+                                   "2-6-F3-1-F",
+                                   "2-10-F2-F",
+                                   "2-10-F3-2-F",
+                                   "3-5-F3-2-F",
+                                   "3-6-F3-1-M",
+                                   "3-15-F3-1-F",
+                                   "3-21-F2-F",
+                                   "3-24-F3-1-F"),
+                     raw_betas = raw_reps,
+                     SeSame_betas = sesame_reps,
+                     ComBat_betas = combat_reps)
 
-# Add a row at the bottom to get averages
-getmean <- apply(scor[2:4],2,mean)
-bottom_row <- c("average",getmean)
+  getmean <- apply(scor[2:4],2,mean)
+  bottom_row <- c("average",getmean)
 
-scor <- rbind(scor,bottom_row)
+  scor <- rbind(scor,bottom_row)
 
-scor %>%
-  kbl(escape = F, 
-      caption="Spearman Correlations for Technical Replicates with Raw, SeSame, and ComBat betas") %>% 
-  kable_styling("hover", full_width = F) %>% 
-  column_spec(1, bold = T) %>%
-  column_spec(2, bold = T, background = "lightgreen", color = "black") %>% 
-  column_spec(3, bold = T, background = "salmon", color = "black") %>% 
-  column_spec(4, bold = T, background = "skyblue", color = "black")
+  scor %>%
+    kbl(escape = F, 
+        caption="Spearman Correlations for Technical Replicates with Raw, SeSame, and ComBat betas") %>% 
+    kable_styling("hover", full_width = F) %>% 
+    column_spec(1, bold = T) %>%
+    column_spec(2, bold = T, background = "lightgreen", color = "black") %>% 
+    column_spec(3, bold = T, background = "salmon", color = "black") %>% 
+    column_spec(4, bold = T, background = "skyblue", color = "black")
+}
  
 
 
@@ -976,6 +902,10 @@ scor %>%
 ## ├ PCA biplots
 
 ```{r rep_analysis_raw_and_preprocessed_betas}
+
+if (isTRUE(skip_replicate_sections) || ncol(rep_raw) == 0) {
+  warning("Skipping replicate PCA analyses in this test dataset")
+} else {
 
 rep_samplesheet <- samplesheet[samplesheet$replicate==TRUE,]
 
@@ -1185,6 +1115,9 @@ violin.plot1c <- ggplot(data=rlong,aes(x = betas, y = replicate, color = sample,
 violin.plot1c
 
 
+
+}
+
 ```
 
 # Epigenetic Age
@@ -1202,25 +1135,23 @@ violin.plot1c
 
 # Next get noob betas
 
-if (file.exists(here("output","noob_betas.rds"))){
-  
+if (Sys.getenv("IGP_TEST_MODE", "0") == "1") {
+  warning("Skipping noob beta generation in test mode")
+  noobBetas <- matrix(nrow = 0, ncol = 0)
+} else if (file.exists(here("output","noob_betas.rds"))){
   noobBetas <- readRDS(here("output","noob_betas.rds"))
-  
 } else {
-  
-  cl <- makeCluster(16)
+  cl <- makeCluster(min(16, parallel::detectCores()))
   registerDoParallel(cl)
   clusterExport(cl, c("readIDATpair","noob","getBetas"))
-  
+
   noobBetas <- do.call(cbind, parLapply(cl,samplesheet$Basename, function(pfx) { 
     getBetas(noob(readIDATpair(pfx)))
+  }))
 
-    }))
-  
   stopCluster(cl)
-  
-  saveRDS(noobBetas, file = here("output","noob_betas.rds"))
 
+  saveRDS(noobBetas, file = here("output","noob_betas.rds"))
 }
 
 
@@ -1306,11 +1237,20 @@ mage$SampleID <- sub('X', '', mage$SampleID)
 skin_blood_age <- merge(mistakes,mage,by.x="Sample_Name",by.y="SampleID",all.x=TRUE,all.y=FALSE)
 
 
-skin_blood_age <- skin_blood_age[c("uid","Sample_Name","Age","DNAmAgeSkinBloodClock")] %>% 
-  kbl(caption="3-13-F2-F is a perfect genotype match with 3-13-F3-2-F and \n 3-17-F3-2-M is a perfect genotype match with 1-2-F3-1-M") %>% 
-  kable_styling("hover",full_width=F) %>% 
-  row_spec(1:2, bold = T, color = "black", background = "skyblue") %>% 
-  row_spec(3:4, bold = T, color = "black", background = "salmon")
+if (nrow(mistakes) == 0) {
+  skin_blood_age <- tibble::tibble(
+    uid = character(),
+    Sample_Name = character(),
+    Age = numeric(),
+    DNAmAgeSkinBloodClock = numeric()
+  ) %>%
+    kbl(caption = "No accidental duplicate genotype matches detected in this test subset") %>%
+    kable_styling("hover", full_width = FALSE)
+} else {
+  skin_blood_age <- skin_blood_age[c("uid","Sample_Name","Age","DNAmAgeSkinBloodClock")] %>% 
+    kbl(caption="3-13-F2-F is a perfect genotype match with 3-13-F3-2-F and \n 3-17-F3-2-M is a perfect genotype match with 1-2-F3-1-M") %>% 
+    kable_styling("hover",full_width=F)
+}
 
 skin_blood_age
 
