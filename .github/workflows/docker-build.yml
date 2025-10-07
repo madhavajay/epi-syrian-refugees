@@ -3,13 +3,12 @@ name: Build and Push Docker Image
 on:
   push:
     branches:
-      - main
-      - madhava/stage2
+      - main  # Only build and push after merge to main
     tags:
       - 'v*'
   pull_request:
     branches:
-      - main
+      - main  # Build only (no push) for PRs
   workflow_dispatch:  # Manual trigger
 
 env:

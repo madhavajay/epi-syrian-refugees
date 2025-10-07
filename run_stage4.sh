@@ -5,6 +5,7 @@ set -e  # Exit on error
 # Parse command line arguments
 TEST_MODE=false
 DOCKER_MODE=false
+NO_DOCKER_FLAG=false
 PASSTHRU_ARGS=()
 
 while [[ $# -gt 0 ]]; do
@@ -18,6 +19,10 @@ while [[ $# -gt 0 ]]; do
             DOCKER_MODE=true
             shift
             ;;
+        --no-docker)
+            NO_DOCKER_FLAG=true
+            shift
+            ;;
         *)
             echo "Unknown option: $1"
             echo "Usage: $0 [--test] [--docker]"
@@ -26,12 +31,11 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-if [ "$DOCKER_MODE" = true ]; then
-    docker run --rm -v "$(pwd)":/workspace -w /workspace -e IGP_CORES="${IGP_CORES:-}" \
+if [ "$DOCKER_MODE" = true ] && [ "$NO_DOCKER_FLAG" = false ]; then
+    docker run --rm -v "$(pwd)":/workspace -w /workspace -e IGP_CORES="${IGP_CORES:-}" -e IGP_TEST_MODE="$([ "$TEST_MODE" = true ] && echo 1 || echo 0)" \
         epi-syrian-refugees ./link_data.sh
-    cmd="./run_stage4.sh ${PASSTHRU_ARGS[*]} --no-docker"
-    docker run --rm -v "$(pwd)":/workspace -w /workspace -e IGP_CORES="${IGP_CORES:-}" \
-        epi-syrian-refugees Rscript -e "setwd('/workspace'); system('$cmd')"
+    docker run --rm -v "$(pwd)":/workspace -w /workspace -e IGP_CORES="${IGP_CORES:-}" -e IGP_TEST_MODE="$([ "$TEST_MODE" = true ] && echo 1 || echo 0)" \
+        epi-syrian-refugees Rscript -e "setwd('/workspace'); system('./run_stage4_rscript.R ${PASSTHRU_ARGS[*]}')"
     exit $?
 fi
 
