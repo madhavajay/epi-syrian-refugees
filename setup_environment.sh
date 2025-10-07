@@ -357,9 +357,17 @@ if [[ "$ARCH" == "arm64" ]] && [[ "$OS" == "Darwin" ]]; then
         options(timeout = 600)  # 10 min timeout for slow connections
         cat('Downloading essential sesame reference files...\\n')
 
-        # Cache only essential files for EPIC arrays (exact names from error messages)
-        tryCatch(sesameDataCache('EPIC.address'), error = function(e) cat('Note: EPIC.address cache issue\\n'))
-        tryCatch(sesameDataCache('idatSignature'), error = function(e) cat('Note: idatSignature cache issue\\n'))
+        # Cache all required files for EPIC arrays (exact names from error messages)
+        required_files <- c('EPIC.address', 'idatSignature', 'KYCG.EPIC.Mask.20220123')
+        for (file in required_files) {
+          tryCatch({
+            cat(paste('  Caching', file, '...\\n'))
+            sesameDataCache(file)
+            cat(paste('  ✓', file, '\\n'))
+          }, error = function(e) {
+            cat(paste('  Note:', file, 'cache issue\\n'))
+          })
+        }
 
         cat('✓ Essential sesame reference data cached\\n')
     \""
@@ -371,9 +379,17 @@ else
         options(timeout = 600)  # 10 min timeout for slow connections
         cat('Downloading essential sesame reference files...\n')
 
-        # Cache only essential files for EPIC arrays (exact names from error messages)
-        tryCatch(sesameDataCache('EPIC.address'), error = function(e) cat('Note: EPIC.address cache issue\n'))
-        tryCatch(sesameDataCache('idatSignature'), error = function(e) cat('Note: idatSignature cache issue\n'))
+        # Cache all required files for EPIC arrays (exact names from error messages)
+        required_files <- c('EPIC.address', 'idatSignature', 'KYCG.EPIC.Mask.20220123')
+        for (file in required_files) {
+          tryCatch({
+            cat(paste('  Caching', file, '...\n'))
+            sesameDataCache(file)
+            cat(paste('  ✓', file, '\n'))
+          }, error = function(e) {
+            cat(paste('  Note:', file, 'cache issue\n'))
+          })
+        }
 
         cat('✓ Essential sesame reference data cached\n')
     "

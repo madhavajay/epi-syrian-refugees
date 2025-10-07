@@ -667,18 +667,37 @@ toAverage <-by(toAverage$uid,toAverage$sampleID,print)
 
 ```{r readIdats_reps}
 
-# Ensure essential sesame data is cached (required for IDAT reading)
-# Only cache specific files needed for EPIC arrays (faster and more reliable than bulk download)
+# Ensure ALL required sesame data is cached (required for IDAT reading)
 cat("Checking sesame reference data cache...\n")
 options(timeout = 600)  # Increase timeout for slow connections
 
-# Cache essential files with error handling (exact names from error messages)
-tryCatch(sesameDataCache('EPIC.address'), error = function(e)
-  cat(paste("Note: EPIC.address cache issue:", e$message, "\n")))
-tryCatch(sesameDataCache('idatSignature'), error = function(e)
-  cat(paste("Note: idatSignature cache issue:", e$message, "\n")))
+# Show ExperimentHub cache location
+eh_cache <- rappdirs::user_cache_dir("ExperimentHub")
+cat(paste("ExperimentHub cache directory:", eh_cache, "\n"))
 
-cat("✓ Essential sesame reference data cached\n")
+# Try caching ALL sesame data (most reliable approach despite being slower)
+cat("Attempting to cache all sesame data (may take several minutes)...\n")
+tryCatch({
+  sesameDataCache()
+  cat("✓ All sesame data cached successfully\n")
+}, error = function(e) {
+  cat(paste("Warning: Bulk cache failed:", e$message, "\n"))
+  cat("Falling back to individual file caching...\n")
+
+  # Fallback: cache specific files
+  required_files <- c('EPIC.address', 'idatSignature', 'KYCG.EPIC.Mask.20220123')
+  for (file in required_files) {
+    tryCatch({
+      cat(paste("  Caching", file, "...\n"))
+      sesameDataCache(file)
+      cat(paste("  ✓", file, "\n"))
+    }, error = function(e2) {
+      cat(paste("  ✗ FAILED:", file, "-", e2$message, "\n"))
+    })
+  }
+})
+
+cat("Sesame cache setup complete\n")
 
 # Get raw betas first
 
@@ -781,28 +800,36 @@ if (file.exists(here("output","raw_betas.rds"))){
 
   # Report errors if any
   if (length(errors) > 0) {
-    cat(paste("\n=== IDAT Read Errors (", length(errors), "samples failed) ===\n"))
-    for (i in 1:min(10, length(errors))) {
+    err_msg <- paste("\n=== Raw IDAT Read Errors (", length(errors), "samples failed) ===\n")
+    cat(err_msg)
+    cat(err_msg, file = here("output", "debug_trace.txt"), append = TRUE)
+
+    for (i in 1:min(5, length(errors))) {
       err <- errors[[i]]
-      cat(paste("  Sample", i, ":", basename(err$pfx), "\n"))
-      cat(paste("    Error:", err$error, "\n"))
+      err_detail <- paste("  Sample:", basename(err$pfx), "- Error:", err$error, "\n")
+      cat(err_detail)
+      cat(err_detail, file = here("output", "debug_trace.txt"), append = TRUE)
     }
-    if (length(errors) > 10) {
-      cat(paste("  ... and", length(errors) - 10, "more errors\n"))
+    if (length(errors) > 5) {
+      more_msg <- paste("  ... and", length(errors) - 5, "more\n")
+      cat(more_msg)
+      cat(more_msg, file = here("output", "debug_trace.txt"), append = TRUE)
     }
     cat("=====================================\n\n")
+    cat("=====================================\n", file = here("output", "debug_trace.txt"), append = TRUE)
   }
 
   if (length(successful_reads) == 0) {
-    cat("\n✗ All IDAT reads failed!\n")
+    cat("\n✗ All raw IDAT reads failed!\n")
     cat(paste("  Total samples attempted:", nrow(samplesheet), "\n"))
-    cat(paste("  All returned errors\n"))
     if (length(errors) > 0) {
       cat("\nShowing first error in detail:\n")
       cat(paste("  Path:", errors[[1]]$pfx, "\n"))
       cat(paste("  Error:", errors[[1]]$error, "\n"))
+      cat(paste("  Error:", errors[[1]]$error, "\n"), file = here("output", "debug_trace.txt"), append = TRUE)
     }
-    stop("All IDAT reads failed. See error details above.")
+    cat("FATAL: All raw IDAT reads failed\n", file = here("output", "debug_trace.txt"), append = TRUE)
+    stop("All raw IDAT reads failed. Check output/debug_trace.txt for details.")
   }
 
   cat(paste("\n✓ Successfully read", length(successful_reads), "of", nrow(samplesheet), "samples\n\n"))
@@ -859,17 +886,28 @@ if (file.exists(here("output","preprocessed_betas.rds"))){
   successful_reads <- ppBetas_list[!is_error]
 
   if (length(errors) > 0) {
-    message(paste("\n=== Preprocessed IDAT Read Errors (", length(errors), "samples failed) ==="))
-    for (i in 1:min(3, length(errors))) {
+    err_msg <- paste("\n=== Preprocessed IDAT Read Errors (", length(errors), "samples failed) ===\n")
+    cat(err_msg)
+    cat(err_msg, file = here("output", "debug_trace.txt"), append = TRUE)
+
+    for (i in 1:min(5, length(errors))) {
       err <- errors[[i]]
-      message(paste("  Sample:", basename(err$pfx), "- Error:", err$error))
+      err_detail <- paste("  Sample:", basename(err$pfx), "- Error:", err$error, "\n")
+      cat(err_detail)
+      cat(err_detail, file = here("output", "debug_trace.txt"), append = TRUE)
     }
-    if (length(errors) > 3) message(paste("  ... and", length(errors) - 3, "more"))
-    message("=====================================\n")
+    if (length(errors) > 5) {
+      more_msg <- paste("  ... and", length(errors) - 5, "more\n")
+      cat(more_msg)
+      cat(more_msg, file = here("output", "debug_trace.txt"), append = TRUE)
+    }
+    cat("=====================================\n\n")
+    cat("=====================================\n", file = here("output", "debug_trace.txt"), append = TRUE)
   }
 
   if (length(successful_reads) == 0) {
-    stop("All preprocessed IDAT reads failed.")
+    cat("FATAL: All preprocessed IDAT reads failed\n", file = here("output", "debug_trace.txt"), append = TRUE)
+    stop("All preprocessed IDAT reads failed. Check output/debug_trace.txt for details.")
   }
 
   message(paste("Successfully preprocessed", length(successful_reads), "of", nrow(samplesheet), "samples"))

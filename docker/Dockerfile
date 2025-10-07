@@ -71,8 +71,16 @@ RUN micromamba run -n ${ENV_NAME} Rscript -e " \
     library(sesameData); \
     options(timeout = 600); \
     cat('Downloading essential sesame reference files...\n'); \
-    tryCatch(sesameDataCache('EPIC.address'), error = function(e) cat('Note: EPIC.address cache issue\n')); \
-    tryCatch(sesameDataCache('idatSignature'), error = function(e) cat('Note: idatSignature cache issue\n')); \
+    required_files <- c('EPIC.address', 'idatSignature', 'KYCG.EPIC.Mask.20220123'); \
+    for (file in required_files) { \
+      tryCatch({ \
+        cat(paste('  Caching', file, '...\n')); \
+        sesameDataCache(file); \
+        cat(paste('  ✓', file, '\n')); \
+      }, error = function(e) { \
+        cat(paste('  Note:', file, 'cache issue\n')); \
+      }); \
+    }; \
     cat('✓ Essential sesame reference data cached\n'); \
     "
 
