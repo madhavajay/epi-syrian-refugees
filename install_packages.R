@@ -6,7 +6,9 @@ cat("========================================\n\n")
 
 # Set CRAN mirror and increase timeout for slow networks
 options(repos = c(CRAN = "https://cloud.r-project.org/"))
-options(timeout = 300)  # 5 minutes instead of 60 seconds
+options(timeout = 600)  # 10 minutes for slow networks
+options(download.file.method = "libcurl")
+options(download.file.extra = "-L -k")  # Follow redirects, allow insecure
 
 # Parallel compilation - use all CPU cores
 num_cores <- parallel::detectCores()
@@ -80,7 +82,8 @@ BiocManager::install(version = "3.20", ask = FALSE, update = FALSE)
 
 cat("\n--- Installing CRAN packages (ALL BATCHES) ---\n")
 cran_packages <- c(
-  # Core
+  # Core (remotes first for GitHub packages)
+  "remotes",
   "jsonlite", "data.table", "Rcpp", "broom", "dplyr", "DT", "forcats",
   "ggplot2", "here", "magrittr", "purrr", "stringr", "tidyr",
   # Missing dependencies first (needed by other packages)
@@ -92,6 +95,7 @@ cran_packages <- c(
   # Visualization
   "GGally", "ggalluvial", "ggdendro", "ggdist", "ggeffects", "ggforce", "gghalves",
   "ggrepel", "ggVennDiagram", "gplots", "gtools", "scales", "viridis", "patchwork",
+  "scattermore",
   # Stats & analysis
   "doParallel", "emmeans", "factoextra", "geepack",
   "Hmisc", "jtools", "lmtest", "MASS", "na.tools", "pander",
@@ -114,109 +118,148 @@ for (pkg in cran_packages) {
 }
 
 cat("\n--- Installing Bioconductor packages ---\n")
-bioc_packages <- c(
-  "gdsfmt", "DNAcopy",  # Dependencies for meffil
+# Core packages (required)
+bioc_core <- c(
+  "gdsfmt", "DNAcopy",
   "bacon", "PCAtools",
   "minfi", "sesame", "sesameData", "EpiDISH", "sva",
-  "DNAmArray",
   "FDb.InfiniumMethylation.hg19",
   "IlluminaHumanMethylationEPICmanifest",
   "IlluminaHumanMethylationEPICanno.ilm10b4.hg19",
-  "missMethyl", "org.Hs.eg.db"
+  "org.Hs.eg.db"
 )
 
+# Optional packages (may fail on some mirrors)
+bioc_optional <- c(
+  "ruv",
+  "missMethyl"
+)
+
+bioc_packages <- c(bioc_core, bioc_optional)
+
 for (pkg in bioc_packages) {
+  is_optional <- pkg %in% bioc_optional
+
   if (!requireNamespace(pkg, quietly = TRUE)) {
-    cat(paste0("Installing ", pkg, "...\n"))
-    BiocManager::install(pkg, ask = FALSE, update = FALSE, destdir = download_cache)
+    cat(paste0("Installing ", pkg, if(is_optional) " (optional)" else "", "...\n"))
+    tryCatch({
+      BiocManager::install(pkg, ask = FALSE, update = FALSE, destdir = download_cache)
+    }, error = function(e) {
+      if (is_optional) {
+        cat(paste0("⚠ ", pkg, " installation failed (optional, skipping)\n"))
+      } else {
+        cat(paste0("⚠ ", pkg, " installation failed, retrying once...\n"))
+        Sys.sleep(2)
+        tryCatch({
+          BiocManager::install(pkg, ask = FALSE, update = FALSE, destdir = download_cache)
+        }, error = function(e2) {
+          cat(paste0("✗ ", pkg, " FAILED after retry - build may be incomplete\n"))
+        })
+      }
+    })
   } else {
     cat(paste0("✓ ", pkg, " already installed\n"))
   }
 }
 
-# Fallback for DNAmArray (archived on Bioconductor as of 3.20)
-if (!requireNamespace("DNAmArray", quietly = TRUE)) {
-  cat("Installing DNAmArray from GitHub (Bioconductor release unavailable)...\n")
-  remotes::install_github("molepi/DNAmArray", upgrade = "never")
-}
-
 cat("\n--- Installing GitHub packages ---\n")
 
-# Ensure remotes is installed
+# Ensure remotes is installed and loaded before using it
 if (!requireNamespace("remotes", quietly = TRUE)) {
-  cat("Installing remotes...\n")
+  cat("Installing remotes (required for GitHub packages)...\n")
   install.packages("remotes", destdir = download_cache)
 }
 
-# kableExtra is now in the CRAN packages list above
-
-# Install ewastools from GitHub
-if (!requireNamespace("ewastools", quietly = TRUE)) {
-  cat("Installing ewastools from GitHub...\n")
-  remotes::install_github("hhhh5/ewastools")
+# Verify remotes loaded successfully
+if (!requireNamespace("remotes", quietly = TRUE)) {
+  cat("✗ remotes installation failed - skipping GitHub packages\n")
 } else {
-  cat("✓ ewastools already installed\n")
-}
+  cat("✓ remotes available\n")
 
-# Install meffil from GitHub
-if (!requireNamespace("meffil", quietly = TRUE)) {
-  cat("Installing meffil from GitHub...\n")
-
-  # First ensure SmartSVA is installed (XML should be from conda)
-  if (!requireNamespace("SmartSVA", quietly = TRUE)) {
-    cat("Installing SmartSVA dependency...\n")
+  # Fallback for DNAmArray (archived on Bioconductor as of 3.20)
+  if (!requireNamespace("DNAmArray", quietly = TRUE)) {
+    cat("Installing DNAmArray from GitHub (Bioconductor release unavailable)...\n")
     tryCatch({
-      install.packages("SmartSVA", destdir = download_cache)
+      remotes::install_github("molepi/DNAmArray", upgrade = "never")
     }, error = function(e) {
-      cat("⚠ SmartSVA installation failed:", e$message, "\n")
+      cat("⚠ DNAmArray installation failed (optional package)\n")
     })
+  } else {
+    cat("✓ DNAmArray already installed\n")
   }
 
-  # Now install meffil, telling it to upgrade dependencies but not XML (from conda)
-  tryCatch({
-    remotes::install_github("perishky/meffil", upgrade = "never")
-  }, error = function(e) {
-    cat("⚠ meffil installation failed:", e$message, "\n")
-  })
-} else {
-  cat("✓ meffil already installed\n")
-}
+  # Install ewastools from GitHub
+  if (!requireNamespace("ewastools", quietly = TRUE)) {
+    cat("Installing ewastools from GitHub...\n")
+    tryCatch({
+      remotes::install_github("hhhh5/ewastools")
+    }, error = function(e) {
+      cat("⚠ ewastools installation failed (optional)\n")
+    })
+  } else {
+    cat("✓ ewastools already installed\n")
+  }
 
-# Install methylCIPHER from GitHub
-if (!requireNamespace("methylCIPHER", quietly = TRUE)) {
-  cat("Installing methylCIPHER from GitHub...\n")
-  tryCatch({
-    remotes::install_github("MorganLevineLab/methylCIPHER")
-  }, error = function(e) {
-    cat("⚠ methylCIPHER installation failed:", e$message, "\n")
-  })
-} else {
-  cat("✓ methylCIPHER already installed\n")
-}
+  # Install meffil from GitHub
+  if (!requireNamespace("meffil", quietly = TRUE)) {
+    cat("Installing meffil from GitHub...\n")
 
-# Install ggmosaic (needs ggplot2 ≥ 4 support from GitHub)
-if (!requireNamespace("ggmosaic", quietly = TRUE)) {
-  cat("Installing ggmosaic from GitHub (ggplot2 >= 4 support)...\n")
-  tryCatch({
-    remotes::install_github("haleyjeppson/ggmosaic")
-  }, error = function(e) {
-    cat("⚠ ggmosaic installation failed (optional package)\n")
-  })
-} else {
-  cat("✓ ggmosaic already installed\n")
-}
+    # First ensure SmartSVA is installed (XML should be from conda)
+    if (!requireNamespace("SmartSVA", quietly = TRUE)) {
+      cat("Installing SmartSVA dependency...\n")
+      tryCatch({
+        install.packages("SmartSVA", destdir = download_cache)
+      }, error = function(e) {
+        cat("⚠ SmartSVA installation failed:", e$message, "\n")
+      })
+    }
 
-# Install ClusterBootstrap from GitHub (optional)
-if (!requireNamespace("ClusterBootstrap", quietly = TRUE)) {
-  cat("Installing ClusterBootstrap from GitHub...\n")
-  tryCatch({
-    remotes::install_github("mathijsdeen/ClusterBootstrap")
-  }, error = function(e) {
-    cat("⚠ ClusterBootstrap installation failed (optional)\n")
-  })
-} else {
-  cat("✓ ClusterBootstrap already installed\n")
-}
+    # Now install meffil, telling it to upgrade dependencies but not XML (from conda)
+    tryCatch({
+      remotes::install_github("perishky/meffil", upgrade = "never")
+    }, error = function(e) {
+      cat("⚠ meffil installation failed:", e$message, "\n")
+    })
+  } else {
+    cat("✓ meffil already installed\n")
+  }
+
+  # Install methylCIPHER from GitHub
+  if (!requireNamespace("methylCIPHER", quietly = TRUE)) {
+    cat("Installing methylCIPHER from GitHub...\n")
+    tryCatch({
+      remotes::install_github("MorganLevineLab/methylCIPHER")
+    }, error = function(e) {
+      cat("⚠ methylCIPHER installation failed:", e$message, "\n")
+    })
+  } else {
+    cat("✓ methylCIPHER already installed\n")
+  }
+
+  # Install ggmosaic (needs ggplot2 ≥ 4 support from GitHub)
+  if (!requireNamespace("ggmosaic", quietly = TRUE)) {
+    cat("Installing ggmosaic from GitHub (ggplot2 >= 4 support)...\n")
+    tryCatch({
+      remotes::install_github("haleyjeppson/ggmosaic")
+    }, error = function(e) {
+      cat("⚠ ggmosaic installation failed (optional package)\n")
+    })
+  } else {
+    cat("✓ ggmosaic already installed\n")
+  }
+
+  # Install ClusterBootstrap from GitHub (optional)
+  if (!requireNamespace("ClusterBootstrap", quietly = TRUE)) {
+    cat("Installing ClusterBootstrap from GitHub...\n")
+    tryCatch({
+      remotes::install_github("mathijsdeen/ClusterBootstrap")
+    }, error = function(e) {
+      cat("⚠ ClusterBootstrap installation failed (optional)\n")
+    })
+  } else {
+    cat("✓ ClusterBootstrap already installed\n")
+  }
+}  # End of remotes check
 
 cat("\n========================================\n")
 cat("Package installation complete!\n")

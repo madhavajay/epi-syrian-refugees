@@ -4,8 +4,42 @@ set -e  # Exit on error
 
 # Parse command line arguments
 TEST_MODE=false
-if [[ "$1" == "--test" ]]; then
-    TEST_MODE=true
+DOCKER_MODE=false
+NO_DOCKER_FLAG=false
+PASSTHRU_ARGS=()
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --test)
+            TEST_MODE=true
+            PASSTHRU_ARGS+=(--test)
+            shift
+            ;;
+        --docker)
+            DOCKER_MODE=true
+            shift
+            ;;
+        --no-docker)
+            NO_DOCKER_FLAG=true
+            shift
+            ;;
+        *)
+            echo "Unknown option: $1"
+            echo "Usage: $0 [--test] [--docker]"
+            exit 1
+            ;;
+    esac
+done
+
+if [ "$DOCKER_MODE" = true ] && [ "$NO_DOCKER_FLAG" = false ]; then
+    docker run --rm -v "$(pwd)":/workspace -w /workspace -e IGP_CORES="${IGP_CORES:-}" \
+        epi-syrian-refugees ./link_data.sh
+    docker run --rm -v "$(pwd)":/workspace -w /workspace -e IGP_CORES="${IGP_CORES:-}" \
+        epi-syrian-refugees bash -lc "cd /workspace && ./run_stage1.sh ${PASSTHRU_ARGS[*]} --no-docker"
+    exit $?
+fi
+
+if [ "$TEST_MODE" = true ]; then
     echo "========================================="
     echo "Stage 1: Quality Control (TEST MODE)"
     echo "Epigenetic Violence Analysis"

@@ -5,26 +5,43 @@ set -e  # Exit on error
 # Parse command line arguments
 TEST_MODE=false
 STAGE=""
+DOCKER_MODE=false
+PASSTHRU_ARGS=()
 
 while [[ $# -gt 0 ]]; do
     case $1 in
         --test)
             TEST_MODE=true
+            PASSTHRU_ARGS+=(--test)
             shift
             ;;
         --stage)
             STAGE="$2"
+            PASSTHRU_ARGS+=(--stage "$2")
             shift 2
+            ;;
+        --docker)
+            DOCKER_MODE=true
+            shift
             ;;
         *)
             echo "Unknown option: $1"
-            echo "Usage: $0 [--test] [--stage N]"
+            echo "Usage: $0 [--test] [--stage N] [--docker]"
             echo "  --test: Run in test mode (faster, reduced datasets)"
             echo "  --stage N: Run only stage N (1-4), otherwise runs all stages"
+            echo "  --docker: Execute inside epi-syrian-refugees Docker image"
             exit 1
             ;;
     esac
 done
+
+if [ "$DOCKER_MODE" = true ]; then
+    docker run --rm -v "$(pwd)":/workspace -w /workspace -e IGP_CORES="${IGP_CORES:-}" \
+        epi-syrian-refugees ./link_data.sh
+    docker run --rm -v "$(pwd)":/workspace -w /workspace -e IGP_CORES="${IGP_CORES:-}" \
+        epi-syrian-refugees ./run_all_stages.sh "${PASSTHRU_ARGS[@]}"
+    exit $?
+fi
 
 echo "========================================="
 echo "Syrian Refugee Epigenetic Violence Study"
