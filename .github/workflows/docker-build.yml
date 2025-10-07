@@ -6,9 +6,6 @@ on:
       - main  # Only build and push after merge to main
     tags:
       - 'v*'
-  pull_request:
-    branches:
-      - main  # Build only (no push) for PRs
   workflow_dispatch:  # Manual trigger
 
 env:
@@ -47,7 +44,7 @@ jobs:
             type=ref,event=pr
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            type=sha,prefix={{branch}}-
+            type=sha,prefix=sha-
             type=raw,value=latest,enable={{is_default_branch}}
 
       - name: Build and push
