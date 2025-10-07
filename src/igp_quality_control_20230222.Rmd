@@ -1,0 +1,3755 @@
+---
+title: "Quality Control for Intergenerational Epigenetic Analysis of Exposure to Violence"
+author: "Edward Quinn and Christopher Dutton"
+date: "Last compiled on `r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+    toc_float:
+      collapsed: false
+      smooth_scroll: false
+    code_folding: show
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+# Load ewastools libraries
+
+We go through ewastools, meffil, and then sesame.
+
+Load the libraries required for ewastools first.
+
+```{r load ewas tools libraries and kableExtra ONLY,warning=FALSE,message=FALSE}
+
+
+library(ewastools)
+library(stringi)
+library(data.table)
+library(magrittr)   
+library(purrr)
+library(svd)
+library(kableExtra)
+library(here)
+
+here <- here::here
+
+```
+
+# Ewastools contamination check
+
+```{r loaddata, message=FALSE, warning=FALSE}
+
+
+# read in the sample sheet
+pheno <- read.csv(here("data","cMulligan_SampleSheet160.csv"))
+
+# get the working directory then append it with the subfolder, data (which houses the idat files)
+wd <- here()
+wd <- paste0(wd, "/data/")
+
+# add the directory information for each idat file into the pheno dataframe, so that the read_idats function
+# can find the files
+pheno$id <- paste0(wd, pheno$id)
+
+
+if (file.exists(here("output","snps.rds"))){
+  snps <- readRDS(file = here("output","snps.rds"))
+} else {
+
+  meth <- read_idats(pheno$id,quiet = FALSE)
+
+  # get betas
+  beta <- meth %>% 
+    detectionP %>% 
+    mask(0.01) %>% 
+    correct_dye_bias %>% 
+    dont_normalize
+
+  # get snps
+  snps <- meth$manifest[probe_type=="rs",index]
+  snps <- beta[snps,]
+
+
+saveRDS(snps, file = here("output","snps.rds"))
+rm(meth)
+rm(beta)
+ 
+ }
+
+
+metadata <- read.csv(here("supp_data","cMulligan_SampleManifest160.csv"))
+
+genotypes <- call_genotypes(snps,learn=FALSE)
+
+pheno$outlier <- snp_outliers(genotypes)
+
+contam <- pheno[pheno$outlier > -4,c("Sample_Name","id","outlier")]
+
+## get Sample IDs into the contamination dataframe
+metadata <- metadata[,c(2,3)]
+colnames(metadata) <- c("ID", "Sample_Name")
+contam <- merge(contam, metadata, by="Sample_Name")
+
+
+contam_table <- contam[c("ID","outlier","id")] %>% 
+  kbl(caption="Samples identified as contaminated by ewastools") %>% 
+  kable_styling("hover",full_width=F)
+
+```
+
+Load the rest of the libraries required for this script
+
+```{r loadlibraries, message=FALSE, warning=FALSE}
+
+library(sesame)
+# run sesameDataCache()
+library(ggforce)
+library(ggplot2)
+library(ggdendro)
+library(vegan)
+library(stringr)
+library(factoextra)
+library(meffil)
+library(IlluminaHumanMethylationEPICmanifest)
+library(sesameData)
+library(sva)
+library(Hmisc)
+library(xtable)
+library(PCAtools)
+library(tidyr)
+library(pander)
+library(minfi)
+library(FDb.InfiniumMethylation.hg19)
+library(org.Hs.eg.db)
+library(DNAmArray)
+library(EpiDISH)
+library(gplots)
+library(DT)
+library(ggpubr)
+library(dplyr)
+library(geepack)
+library(emmeans)
+library(ggeffects)
+library(table1)
+library(forcats)
+library(broom)
+library(MASS)
+library(DiagrammeR)
+library(sandwich)
+library(lmtest)
+library(parallel)
+library(doParallel)
+
+here <- here::here
+
+```
+
+# Clustering by SNPs
+
+Note that we have run this clustering analysis, but the clustering
+anaylsis run later (using the heatmap and the code Alexandra gave us) is
+the one we actually used for quality control, and not that run in this
+cluster here.
+
+```{r clusterbysnps}
+
+# replace sample names with IGP id
+m <- as.data.frame(t(snps))
+
+m$id <- row.names(m)
+
+pheno$id2 <- paste0(pheno$Sentrix_ID,sep="_",pheno$Sentrix_Position)
+
+sheet <- merge(m,pheno,by.x="id",by.y="id2")
+
+hihg <- read.csv(here("supp_data","cMulligan_SampleManifest160.csv"))
+
+sheet2 <- merge(sheet,hihg,by.x = "Sample_Name",by.y="HIHG.SAMPLE.ID")
+
+sheet3 <- sheet2[c("SAMPLE.EXTERNAL.ID","id")]
+
+sheet4 <- merge(sheet3,m,by="id")
+
+sheet5 <- sheet4[-1]
+
+df1 <- t(sheet5)
+colnames(df1) <- df1[1,]
+df2 <- df1[-1,]
+df2 <- as.data.frame(df2)
+
+# Replace NA's with a zero so clustering function runs.
+df2[is.na(df2)] <- 0
+
+df2 <- apply(df2, 2, as.numeric)
+
+
+d <- dist(t(df2), method = "euclidean") # distance matrix
+fit <- hclust(d, method="ward")
+plot(fit) # display dendogram
+sample_count <- length(fit$order)
+
+if (is.na(sample_count) || sample_count < 2) {
+    warning("Not enough samples for clustering rectangles; skipping cutree step for this dataset")
+    groups <- data.frame()
+} else {
+    k_target <- min(54, max(2, sample_count - 1))
+    rect.hclust(fit, k = k_target)
+
+    groups <- cutree(fit, k = k_target)
+
+    groups <- as.data.frame(groups)
+
+    groups <- cbind(groups, metadata)
+}
+
+
+# plot(fit,  xlab = "Height", horiz = TRUE)
+
+# Another way to get a dendrogram:
+g <- ggdendrogram(fit,rotate = TRUE) +
+    theme(text = element_text(size=40))
+
+ggsave(filename = here("output","family_dendogram.png"),
+       height = 250,
+       width = 100,
+       unit="cm",
+       dpi=300,
+       limitsize=FALSE)
+
+```
+
+# Preliminary NMDS Ordinations
+
+```{r nmds}
+
+set.seed(1)
+
+df6 <- t(df2)
+
+## note, needed to bump up k=4 to reach solution. 
+## see https://urldefense.proofpoint.com/v2/url?u=https-3A__www.rdocumentation.org_packages_vegan_versions_2.4-2D2_topics_metaMDS&d=DwIGAg&c=sJ6xIWYx-zLMB3EPkvcnVg&r=sWbu0rLU_L4ssDfYmHby1mWqmTG4ExdsuRnL2LYjxa8&m=li-cnHgg-H1IOjYcjupkBUAyTcjwoMMEN04ziqv6ZGA&s=WpFzsU-2Hp0_0pOhCTNeDxQfLF-9em67v2-9OyCfgGU&e= 
+x <-  metaMDS(df6, distance="bray", trymax = 50, k=4)
+
+x1 <- plot(x)
+
+df7 <- as.data.frame(x1$sites)
+
+df7$fam <- substr(rownames(df7),1,6)
+df7$fam <- substr(df7$fam,2,5)
+df7$grp <- substr(df7$fam,1,2)
+
+# Focus in on the cluster of individuals, leaving
+# out the two outliers
+plot1 <- ggplot(df7, aes(x=NMDS1,y=NMDS2,color=fam)) +
+  geom_text(aes(label = fam), size = 4) +
+  xlim(-0.2,0.2)
+plot1
+
+
+# Include all samples in plot
+plot2 <- ggplot(df7, aes(x=NMDS1,y=NMDS2,color=fam)) +
+  geom_text(aes(label = fam), size = 4)
+plot2
+
+## view only grp 1
+plot3 <- ggplot(df7[which(df7$grp =="1."),], aes(x=NMDS1,y=NMDS2,color=fam)) +
+  geom_text(aes(label = fam), size = 4) +
+  geom_mark_ellipse(expand = 0,aes(fill=fam))
+plot3
+
+## view only grp 2
+plot4 <- ggplot(df7[which(df7$grp =="2."),], aes(x=NMDS1,y=NMDS2,color=fam)) +
+  geom_text(aes(label = fam), size = 4) +
+  geom_mark_ellipse(expand = 0,aes(fill=fam))
+plot4
+
+## view only grp 3
+plot5 <- ggplot(df7[which(df7$grp =="3."),], aes(x=NMDS1,y=NMDS2,color=fam)) +
+  geom_text(aes(label = fam), size = 4) +
+  geom_mark_ellipse(expand = 0,aes(fill=fam))
+plot5
+
+```
+
+# Check by swab type
+
+Does not appear to be any significant difference between SNPS between
+the two swab types (J = Jordanian cotton swab, US = Isohelix buccal
+swabs)
+
+```{r}
+
+IGP_SwabType <- read.csv(here("supp_data","IGP_SwabType.csv"))
+
+dft <- rbind(df2, colnames(df2)) ## sets the column names as a row, so we can merge later
+
+df3 <- t(dft)
+
+df3 <- as.data.frame(df3)
+
+names(df3)[names(df3) == 'V60'] <- 'sampleId'
+
+total <- merge(df3 ,IGP_SwabType,by="sampleId")
+
+total[,2:60] <- lapply(total[,2:60], as.numeric) ## convert to numeric
+  
+##row.names(IGP_SwabType) <- IGP_SwabType$sampleId
+
+## try clustering
+#library(factoextra)
+
+fviz_nbclust(total[,2:60], kmeans, method="gap_stat")
+
+set.seed(123)
+km.res <- kmeans(total[,2:60], 1, nstart = 25)
+fviz_cluster(km.res, data = total[,2:60],
+             palette = "jco", geom="point",
+             ggtheme = theme_minimal()) +
+             geom_point(aes(colour=factor(total$Swab)))
+
+```
+
+# meffil qc
+
+Run meffil quality control and compare genotypes calls across all
+samples to check for exact matches.
+
+```{r meffil_qc_step1}
+
+
+# Merge the shipping manifest with the samplesheet provided by Miami
+
+x <- read.csv(here("data","cMulligan_SampleSheet160.csv"))
+y <- read.csv(here("supp_data","cMulligan_SampleManifest160.csv"))
+
+df1 <- merge(x,y,by.x="Sample_Name",by.y="HIHG.SAMPLE.ID")
+
+
+# Create and edit samplesheet
+
+path_to_idat_files <- paste0(here(),"/data")
+
+samplesheet <- meffil.create.samplesheet(path_to_idat_files)
+
+# Add sample names to meffil samplesheet
+
+SNid = paste0(df1[,"Sentrix_ID"], "_", df1[,"Sentrix_Position"])
+
+o = match(samplesheet$Sample_Name, SNid)
+
+newID = df1[o, "SAMPLE.EXTERNAL.ID"]
+Sex = df1[o,"Gender"]
+Plate = df1[o, "Sample_Plate"]
+
+# Add in sampleID, Sex, and Plate vars
+samplesheet$sampleID <- newID
+
+samplesheet[,2] = Sex
+samplesheet[,8] = Plate
+colnames(samplesheet)[colnames(samplesheet)=="V8"] <- "Plate"
+
+samplesheet$Sex <- ifelse(samplesheet$Sex=="female","F","M")
+
+```
+
+**We need to change the sex label for 1-15-F3-2-F. We know this person
+was mislabeled on the manifest sent to the core.The ID name itself
+confirms that this individual is female.**
+
+```{r fix mislabeled sample, results='hide'}
+
+samplesheet[samplesheet$sampleID=="1-15-F3-2-F","Sex"]
+
+# That returns M when it should return F. Fix:
+
+samplesheet[samplesheet$sampleID=="1-15-F3-2-F","Sex"] <- "F"
+
+
+```
+
+```{r meffil_qc_step_2, message=FALSE, warning=FALSE}
+
+if (file.exists(here("output","meffil_qc_objects_20210924.Robj"))){
+  
+  load(here("output","meffil_qc_objects_20210924.Robj"))
+  
+} else {
+  
+  qc_objects_buccal <- meffil.qc(samplesheet, verbose=TRUE)
+
+  save(qc_objects_buccal, file = here("output","meffil_qc_objects_20210924.Robj"))
+  
+}
+
+```
+
+```{r meffil_qc_step_3, message=FALSE, warning=FALSE}
+
+# set qc parameters and generate a qc summary report
+
+if (file.exists(here("output","meffil_qc_summary_object_20210924.Robj"))){
+  
+  load(here("output","meffil_qc_summary_object_20210924.Robj"))
+  
+} else {
+
+qc_parameters <- meffil.qc.parameters(#set QC parameters
+  beadnum.samples.threshold             = 0.1,
+  detectionp.samples.threshold          = 0.1,
+  detectionp.cpgs.threshold             = 0.1, 
+  beadnum.cpgs.threshold                = 0.1,
+  sex.outlier.sd                        = 5)
+
+qc_summary_buccal <- meffil.qc.summary(#summarise QC
+  qc_objects_buccal,
+  parameters = qc_parameters)
+
+save(qc_summary_buccal, file= here("output","meffil_qc_summary_object_20210924.Robj"))
+
+meffil.qc.report(qc_summary_buccal, 
+                 output.file = here("output","meffil_qc_summary_report_20211004.html"))
+
+}
+
+outlier <- qc_summary_buccal$bad.samples
+
+index <- outlier$issue %in% c("Control probe (dye.bias)", 
+                              "Methylated vs Unmethylated",
+                              "X-Y ratio outlier",
+                              "Low bead numbers",
+                              "Detection p-value",
+                              "Control probe (bisulfite1)",
+                              "Control probe (bisulfite2)")
+
+outlier <- outlier[index,]
+rownames(outlier) <- 1:4
+getnames <- match(outlier$sample.name,samplesheet$Sample_Name)
+outlier$ID <- samplesheet[getnames,"sampleID"]
+
+meffil_qc <- outlier %>% kbl(caption="Samples identified by QC check in meffil") %>% kable_styling("hover",full_width=F) %>% 
+  column_spec(3, bold = T) %>% 
+  row_spec(1:2, bold = T, color = "black", background = "yellow") %>% 
+  row_spec(3, bold = T, color = "black", background = "orange") %>% 
+  row_spec(4, bold = T, color = "black", background = "wheat")
+  
+
+```
+
+```{r meffil_qc_step_4, warning=FALSE, message=FALSE}
+
+# get genotype data
+snp.betas <- meffil.snp.betas(qc_objects_buccal)
+genotypes <- meffil:::calculate.beta.genotypes(snp.betas)
+
+
+```
+
+```{r meffil_qc_step_5, warning=FALSE, message=FALSE, results='hide'}
+
+########################################################################
+# compare each person's genotypes to every other person in the dataset
+# to check for mislabeling or sample mismatches
+########################################################################
+
+whole.df <- as.data.frame(t(genotypes))
+
+dim(whole.df) # 160 samples with calls at 59 SNPS
+
+# Get only the duplicated rows (rows with all 59 SNPS matching)
+repeats <- whole.df[duplicated.data.frame(whole.df) | 
+                      duplicated.data.frame(whole.df,fromLast = TRUE),]
+
+dim(repeats) # 24 samples with calls at 59 SNPs that are identical to each other.
+
+# Get a single vector that concatenates all the SNP calls for each individual
+# into a vector: repeats$id
+repeats$id <- apply(repeats[, colnames(repeats), drop = F], 
+                    MARGIN = 1, 
+                    FUN = function(i) paste(i, collapse = ""))
+
+rcheck <- split(repeats,as.factor(repeats$id))
+
+head(rcheck, n=3)
+
+# Get the samples that match 100% of their SNP calls
+
+x <- as.data.frame(lapply(rcheck, rownames))
+dim(x)
+colnames(x) <- 1:12
+
+x <- c(x$`1` , x$`2` , x$`3` ,
+         x$`4` , x$`5` , x$`6` , x$`7` , x$`8` , x$`9` ,
+         x$`10` , x$`11` , x$`12`)
+
+dsamp <- samplesheet[samplesheet$Sample_Name %in% x,]
+
+# These are the ten samples run in duplicate on purpose
+# (technical replicates):
+
+duplicates <- dsamp[duplicated(dsamp$sampleID) | 
+                      duplicated(dsamp$sampleID, fromLast=TRUE),]
+
+# These are the samples run in duplicate by accident:
+
+mistakes <- dsamp[!(dsamp$sampleID %in% duplicates$sampleID),]
+
+duplicated_samples <- mistakes[c(1:3,7)] %>% 
+  kbl(caption="3-13-F2-F is a perfect match with 3-13-F3-2-F and
+      3-17-F3-2-M is a perfect match with 1-2-F3-1-M") %>% 
+  kable_styling("hover",full_width=F) %>% 
+  row_spec(1:2, bold = T, color = "black", background = "skyblue") %>% 
+  row_spec(3:4, bold = T, color = "black", background = "salmon")
+
+# 3-13-F2-F is a perfect match with 3-13-F3-2-F
+
+# 3-17-F3-2-M is a perfect match with 1-2-F3-1-M
+
+rm(qc_objects_buccal)
+
+```
+
+# Technical Replicates
+
+<br>
+
+> Get all betas for raw betas, SeSame preprocessed betas, and only
+> replicate SeSame preprocessed + ComBat (batch-corrected - by plate)
+> betas.
+
+Start by labeling technical replicates in the samplesheet object.
+
+```{r label technical replicates}
+
+reps <- samplesheet %>% 
+  group_by(sampleID) %>% 
+  filter(n()>1) %>% 
+  ungroup() %>% 
+  select(sampleID)
+
+samplesheet$replicate <- ifelse(samplesheet$sampleID %in% reps$sampleID, 
+                                TRUE, FALSE)
+
+# Group by replicate AND create unique replicate id number
+
+check <- samplesheet %>% 
+  group_by(sampleID) %>% 
+  filter(n()>1) %>% 
+  mutate(replicate_id = sequence(n())) %>% 
+  ungroup() %>% 
+  select(Sample_Name, replicate_id)
+
+samplesheet <- samplesheet %>% 
+  left_join(check, by = ("Sample_Name"))
+
+# want to add the new replicate_id column, but there
+# is a problem with the left_join because several of
+# the methylation IDs are not in fact unique
+
+check2 <- samplesheet %>% 
+  mutate(uid = ifelse(is.na(replicate_id)==TRUE, 
+                      sampleID, 
+                      paste(sampleID,replicate_id, sep = "_"))) %>% 
+  select(Sample_Name, uid)
+  
+samplesheet <- samplesheet %>% 
+  left_join(check2, by = ("Sample_Name"))
+
+toAverage <- samplesheet %>% 
+  group_by(sampleID) %>% 
+  filter(n()>1) %>% 
+  ungroup() %>% 
+  select(uid,sampleID) %>% 
+  arrange(uid)
+
+toAverage <-by(toAverage$uid,toAverage$sampleID,print)
+
+
+```
+
+> Get raw and preprocessed betas for all samples. Get combat betas for
+> replicates only. Do ComBat on all samples after quality control is
+> complete and bad samples have been removed.
+
+```{r readIdats_reps}
+
+
+# Get raw betas first
+
+if (file.exists(here("output","raw_betas.rds"))){
+  
+  rawBetas <- readRDS(here("output","raw_betas.rds"))
+  
+} else {
+  
+  cl <- makeCluster(16)
+  registerDoParallel(cl)
+  clusterExport(cl, c("readIDATpair","getBetas","prefixMaskButCG"))
+  
+  rawBetas <- do.call(cbind, parLapply(cl,samplesheet$Basename, function(pfx) { 
+    getBetas(prefixMaskButCG(readIDATpair(pfx))) 
+    
+    }))
+  
+  stopCluster(cl)
+  
+  saveRDS(rawBetas, file = here("output","raw_betas.rds"))
+
+}
+
+
+# Next get SeSame betas
+
+if (file.exists(here("output","preprocessed_betas.rds"))){
+  
+  ppBetas <- readRDS(here("output","preprocessed_betas.rds"))
+  
+} else {
+  
+  cl <- makeCluster(16)
+  registerDoParallel(cl)
+  clusterExport(cl, c("readIDATpair","getBetas","prefixMaskButCG",
+                      "inferInfiniumIChannel","dyeBiasNL","pOOBAH","noob"))
+  
+  ppBetas <- do.call(cbind, parLapply(cl,samplesheet$Basename, function(pfx) { 
+    getBetas(noob(pOOBAH(dyeBiasNL(inferInfiniumIChannel(prefixMaskButCG(readIDATpair(pfx))))))) 
+
+    }))
+  
+  stopCluster(cl)
+  
+  saveRDS(ppBetas, file = here("output","preprocessed_betas.rds"))
+
+}
+
+
+
+# Now get combat betas just for replicates
+
+rawBetas <- as.data.frame(rawBetas)
+colnames(rawBetas) <- samplesheet$uid
+
+ppBetas <- as.data.frame(ppBetas)
+colnames(ppBetas) <- samplesheet$uid
+
+# subset betas for replicates
+rep_raw <- rawBetas[colnames(rawBetas) %in% samplesheet[samplesheet$replicate==TRUE,"uid"]]
+rep_sesame <- ppBetas[colnames(ppBetas) %in% samplesheet[samplesheet$replicate==TRUE,"uid"]]
+
+
+if (file.exists(here("output","rep_combat.rds"))){
+  
+  rep_combat <- readRDS(here("output","rep_combat.rds"))
+} else {
+
+# prepare sesame preprocess replicate betas for ComBat.
+
+rep_combat <- ppBetas[colnames(ppBetas) %in% samplesheet[samplesheet$replicate==TRUE,"uid"]]
+
+# ComBat will not run on probes where everyone is NA. Eliminate
+# those probes.
+
+rep_combat <- rep_combat %>% 
+  filter(rowSums(is.na(.)) < 5)
+
+od <- samplesheet[samplesheet$replicate==TRUE,]
+
+linker1 <- match(od$uid,colnames(rep_combat))
+
+batch <- od[linker1, ]
+
+# Convert betas to m values prior to combat
+mvals <- as.matrix(BetaValueToMValue(rep_combat))
+# make model matrix
+modcombat <- model.matrix(~1,data=batch)
+
+# identical(batch$Sample_Name,colnames(rep_combat)) # TRUE
+
+# Run ComBat with a parametric Bayesian framework
+mvals <- ComBat(
+dat = mvals,
+batch = batch$Plate,
+mod = modcombat,
+par.prior = TRUE, # runs a parametric framework
+prior.plots = FALSE, # outputs prior plots
+mean.only = FALSE,
+ref.batch = NULL)
+
+# convert mvals object into a data frame of beta values
+
+rep_combat <- as.data.frame(MValueToBetaValue(mvals))
+
+saveRDS(rep_combat, file = here("output","rep_combat.rds"))
+
+rm(mvals)
+
+}
+
+```
+
+This is the correlation matrix function
+
+```{r get_corstars_function,include=FALSE}
+
+# Before we make the matrix, get packages and custom corstars script
+# x is a matrix containing the data
+# method : correlation method. "pearson"" or "spearman"" is supported
+# removeTriangle : remove upper or lower triangle
+# results :  if "html" or "latex"
+# the results will be displayed in html or latex format
+corstars <-function(x, method=c("pearson", "spearman"), removeTriangle=c("upper", "lower"),
+                    result=c("none", "html", "latex")){
+  #Compute correlation matrix
+  require(Hmisc)
+  x <- as.matrix(x)
+  correlation_matrix<-rcorr(x, type=method[1])
+  R <- correlation_matrix$r # Matrix of correlation coeficients
+  p <- correlation_matrix$P # Matrix of p-value 
+  
+  ## Define notions for significance levels; spacing is important.
+  mystars <- ifelse(p < .0001, "", ifelse(p < .001, "*** ", ifelse(p < .01, "**  ", ifelse(p < .05, "*   ", "    "))))
+  
+  ## trunctuate the correlation matrix to two decimal
+  R <- format(round(cbind(rep(-1.11, ncol(x)), R), 4))[,-1]
+  
+  ## build a new matrix that includes the correlations with their apropriate stars
+  Rnew <- matrix(paste(R, mystars, sep=""), ncol=ncol(x))
+  diag(Rnew) <- paste(diag(R), " ", sep="")
+  rownames(Rnew) <- colnames(x)
+  colnames(Rnew) <- paste(colnames(x), "", sep="")
+  
+  ## remove upper triangle of correlation matrix
+  if(removeTriangle[1]=="upper"){
+    Rnew <- as.matrix(Rnew)
+    Rnew[upper.tri(Rnew, diag = TRUE)] <- ""
+    Rnew <- as.data.frame(Rnew)
+  }
+  
+  ## remove lower triangle of correlation matrix
+  else if(removeTriangle[1]=="lower"){
+    Rnew <- as.matrix(Rnew)
+    Rnew[lower.tri(Rnew, diag = TRUE)] <- ""
+    Rnew <- as.data.frame(Rnew)
+  }
+  
+  ## remove last column and return the correlation matrix
+  Rnew <- cbind(Rnew[1:length(Rnew)-1])
+  if (result[1]=="none") return(Rnew)
+  else{
+    if(result[1]=="html") print(xtable(Rnew), type="html")
+    else print(xtable(Rnew), type="latex") 
+  }
+} 
+
+
+```
+
+```{r correlation matrices}
+
+# Raw replicate correlations
+raw_rep1 <- rep_raw %>% 
+  select(toAverage$`1-11-F3-2-F`) %>% 
+  corstars(method = "spearman")
+
+raw_rep2 <- rep_raw %>% 
+  select(toAverage$`1-13-F3-2-M`) %>% 
+  corstars(method = "spearman")
+
+raw_rep3 <- rep_raw %>% 
+  select(toAverage$`2-6-F3-1-F`) %>% 
+  corstars(method = "spearman")
+
+raw_rep4 <- rep_raw %>% 
+  select(toAverage$`2-10-F2-F`) %>% 
+  corstars(method = "spearman")
+
+raw_rep5 <- rep_raw %>% 
+  select(toAverage$`2-10-F3-2-F`) %>% 
+  corstars(method = "spearman")
+
+raw_rep6 <- rep_raw %>% 
+  select(toAverage$`3-5-F3-2-F`) %>% 
+  corstars(method = "spearman")
+
+raw_rep7 <- rep_raw %>% 
+  select(toAverage$`3-6-F3-1-M`) %>% 
+  corstars(method = "spearman")
+
+raw_rep8 <- rep_raw %>% 
+  select(toAverage$`3-15-F3-1-F`) %>% 
+  corstars(method = "spearman")
+
+raw_rep9 <- rep_raw %>% 
+  select(toAverage$`3-21-F2-F`) %>% 
+  corstars(method = "spearman")
+
+raw_rep10 <- rep_raw %>% 
+  select(toAverage$`3-24-F3-1-F`) %>% 
+  corstars(method = "spearman")
+
+raw_reps <- as.numeric(c(raw_rep1$`1-11-F3-2-F_1`[2],
+              raw_rep2$`1-13-F3-2-M_1`[2],
+              raw_rep3$`2-6-F3-1-F_1`[2],
+              raw_rep4$`2-10-F2-F_1`[2],
+              raw_rep5$`2-10-F3-2-F_1`[2],
+              raw_rep6$`3-5-F3-2-F_1`[2],
+              raw_rep7$`3-6-F3-1-M_1`[2],
+              raw_rep8$`3-15-F3-1-F_1`[2],
+              raw_rep9$`3-21-F2-F_1`[2],
+              raw_rep10$`3-24-F3-1-F_1`[2]))
+
+
+
+# SeSame replicate correlations
+sesame_rep1 <- rep_sesame %>% 
+  select(toAverage$`1-11-F3-2-F`) %>% 
+  corstars(method = "spearman")
+
+sesame_rep2 <- rep_sesame %>% 
+  select(toAverage$`1-13-F3-2-M`) %>% 
+  corstars(method = "spearman")
+
+sesame_rep3 <- rep_sesame %>% 
+  select(toAverage$`2-6-F3-1-F`) %>% 
+  corstars(method = "spearman")
+
+sesame_rep4 <- rep_sesame %>% 
+  select(toAverage$`2-10-F2-F`) %>% 
+  corstars(method = "spearman")
+
+sesame_rep5 <- rep_sesame %>% 
+  select(toAverage$`2-10-F3-2-F`) %>% 
+  corstars(method = "spearman")
+
+sesame_rep6 <- rep_sesame %>% 
+  select(toAverage$`3-5-F3-2-F`) %>% 
+  corstars(method = "spearman")
+
+sesame_rep7 <- rep_sesame %>% 
+  select(toAverage$`3-6-F3-1-M`) %>% 
+  corstars(method = "spearman")
+
+sesame_rep8 <- rep_sesame %>% 
+  select(toAverage$`3-15-F3-1-F`) %>% 
+  corstars(method = "spearman")
+
+sesame_rep9 <- rep_sesame %>% 
+  select(toAverage$`3-21-F2-F`) %>% 
+  corstars(method = "spearman")
+
+sesame_rep10 <- rep_sesame %>% 
+  select(toAverage$`3-24-F3-1-F`) %>% 
+  corstars(method = "spearman")
+
+sesame_reps <- as.numeric(c(sesame_rep1$`1-11-F3-2-F_1`[2],
+              sesame_rep2$`1-13-F3-2-M_1`[2],
+              sesame_rep3$`2-6-F3-1-F_1`[2],
+              sesame_rep4$`2-10-F2-F_1`[2],
+              sesame_rep5$`2-10-F3-2-F_1`[2],
+              sesame_rep6$`3-5-F3-2-F_1`[2],
+              sesame_rep7$`3-6-F3-1-M_1`[2],
+              sesame_rep8$`3-15-F3-1-F_1`[2],
+              sesame_rep9$`3-21-F2-F_1`[2],
+              sesame_rep10$`3-24-F3-1-F_1`[2]))
+
+
+
+
+
+# ComBat replicate correlations
+combat_rep1 <- rep_combat %>% 
+  select(toAverage$`1-11-F3-2-F`) %>% 
+  corstars(method = "spearman")
+
+combat_rep2 <- rep_combat %>% 
+  select(toAverage$`1-13-F3-2-M`) %>% 
+  corstars(method = "spearman")
+
+combat_rep3 <- rep_combat %>% 
+  select(toAverage$`2-6-F3-1-F`) %>% 
+  corstars(method = "spearman")
+
+combat_rep4 <- rep_combat %>% 
+  select(toAverage$`2-10-F2-F`) %>% 
+  corstars(method = "spearman")
+
+combat_rep5 <- rep_combat %>% 
+  select(toAverage$`2-10-F3-2-F`) %>% 
+  corstars(method = "spearman")
+
+combat_rep6 <- rep_combat %>% 
+  select(toAverage$`3-5-F3-2-F`) %>% 
+  corstars(method = "spearman")
+
+combat_rep7 <- rep_combat %>% 
+  select(toAverage$`3-6-F3-1-M`) %>% 
+  corstars(method = "spearman")
+
+combat_rep8 <- rep_combat %>% 
+  select(toAverage$`3-15-F3-1-F`) %>% 
+  corstars(method = "spearman")
+
+combat_rep9 <- rep_combat %>% 
+  select(toAverage$`3-21-F2-F`) %>% 
+  corstars(method = "spearman")
+
+combat_rep10 <- rep_combat %>% 
+  select(toAverage$`3-24-F3-1-F`) %>% 
+  corstars(method = "spearman")
+
+combat_reps <- as.numeric(c(combat_rep1$`1-11-F3-2-F_1`[2],
+              combat_rep2$`1-13-F3-2-M_1`[2],
+              combat_rep3$`2-6-F3-1-F_1`[2],
+              combat_rep4$`2-10-F2-F_1`[2],
+              combat_rep5$`2-10-F3-2-F_1`[2],
+              combat_rep6$`3-5-F3-2-F_1`[2],
+              combat_rep7$`3-6-F3-1-M_1`[2],
+              combat_rep8$`3-15-F3-1-F_1`[2],
+              combat_rep9$`3-21-F2-F_1`[2],
+              combat_rep10$`3-24-F3-1-F_1`[2]))
+
+
+```
+
+## ├ Spearman Correlations
+
+```{r cor table}
+
+# Values taken from the three correlation matrices above.
+
+scor <- data.frame(replicate = c("1-11-F3-2-F",
+                                 "1-13-F3-2-M",
+                                 "2-6-F3-1-F",
+                                 "2-10-F2-F",
+                                 "2-10-F3-2-F",
+                                 "3-5-F3-2-F",
+                                 "3-6-F3-1-M",
+                                 "3-15-F3-1-F",
+                                 "3-21-F2-F",
+                                 "3-24-F3-1-F"),
+                   raw_betas = raw_reps,
+                   SeSame_betas = sesame_reps,
+                   ComBat_betas = combat_reps)
+
+# Add a row at the bottom to get averages
+getmean <- apply(scor[2:4],2,mean)
+bottom_row <- c("average",getmean)
+
+scor <- rbind(scor,bottom_row)
+
+scor %>%
+  kbl(escape = F, 
+      caption="Spearman Correlations for Technical Replicates with Raw, SeSame, and ComBat betas") %>% 
+  kable_styling("hover", full_width = F) %>% 
+  column_spec(1, bold = T) %>%
+  column_spec(2, bold = T, background = "lightgreen", color = "black") %>% 
+  column_spec(3, bold = T, background = "salmon", color = "black") %>% 
+  column_spec(4, bold = T, background = "skyblue", color = "black")
+ 
+
+
+```
+
+## ├ PCA biplots
+
+```{r rep_analysis_raw_and_preprocessed_betas}
+
+rep_samplesheet <- samplesheet[samplesheet$replicate==TRUE,]
+
+linker1 <- match(rep_samplesheet$uid,colnames(rep_combat))
+
+rep_samplesheet <- rep_samplesheet[linker1, ]
+# Row names and column names need to be in same order
+
+rownames(rep_samplesheet) <- rep_samplesheet$uid
+# identical(rownames(rep_samplesheet),colnames(rep_raw))
+# identical(rownames(rep_samplesheet),colnames(rep_sesame))
+# identical(rownames(rep_samplesheet),colnames(rep_combat))
+
+# Get Principal components for raw, preprocessed, and combat betas
+p <- pca(na.omit(rep_raw),metadata = rep_samplesheet)
+q <- pca(na.omit(rep_sesame),metadata = rep_samplesheet)
+r <- pca(na.omit(rep_combat),metadata = rep_samplesheet)
+
+
+# Get PCAtools::screeplot for raw betas
+PCAtools::screeplot(p, axisLabSize = 18, title = "Raw Betas Scree Plot", titleLabSize = 22)
+
+# Get PCAtools::screeplot for preprocessed betas
+PCAtools::screeplot(q, axisLabSize = 18, title = "Preprocessed Betas Scree Plot",titleLabSize = 22)
+
+# Get PCAtools::screeplot for combat betas
+PCAtools::screeplot(r, axisLabSize = 18, title = "ComBat Betas Scree Plot",titleLabSize = 22)
+
+
+# Get biplot for raw betas
+biplot1a <- biplot(p,lab = NULL, colby = 'sampleID',
+                   colkey = c("1-13-F3-2-M" = 'green3',
+                              "3-5-F3-2-F" = 'red',
+                              "1-11-F3-2-F" = 'orange3',
+                              "3-6-F3-1-M" = 'dodgerblue',
+                              "3-15-F3-1-F" = 'black',
+                              "3-21-F2-F"  = 'purple',
+                             "2-10-F3-2-F" = 'yellow3',
+                              "3-24-F3-1-F" = 'darkgreen',
+                              "2-6-F3-1-F" = 'darkcyan',
+                              "2-10-F2-F"  = 'sandybrown'),
+                  hline = 0, vline = 0,
+                            xlim = c(-140,140),
+                  ylim = c(-35,35),
+                  legendPosition = 'right',
+                  title = 'Raw Betas PCA bi-plot',
+                  subtitle = 'PC1 versus PC2')
+biplot1a
+
+# Get biplot for preprocessed betas
+biplot1b <- biplot(q,lab = NULL, colby = 'sampleID',
+                   colkey = c("1-13-F3-2-M" = 'green3',
+                              "3-5-F3-2-F" = 'red',
+                              "1-11-F3-2-F" = 'orange3',
+                              "3-6-F3-1-M" = 'dodgerblue',
+                              "3-15-F3-1-F" = 'black',
+                              "3-21-F2-F"  = 'purple',
+                             "2-10-F3-2-F" = 'yellow3',
+                              "3-24-F3-1-F" = 'darkgreen',
+                              "2-6-F3-1-F" = 'darkcyan',
+                              "2-10-F2-F"  = 'sandybrown'),
+                  hline = 0, vline = 0,
+                            xlim = c(-140,140),
+                  ylim = c(-35,35),
+                  legendPosition = 'right',
+                  title = 'SeSame (preprocessed) Betas PCA bi-plot',
+                  subtitle = 'PC1 versus PC2')
+biplot1b
+
+# Get biplot for combat betas
+biplot1c <- biplot(r,lab = NULL, colby = 'sampleID',
+                   colkey = c("1-13-F3-2-M" = 'green3',
+                              "3-5-F3-2-F" = 'red',
+                              "1-11-F3-2-F" = 'orange3',
+                              "3-6-F3-1-M" = 'dodgerblue',
+                              "3-15-F3-1-F" = 'black',
+                              "3-21-F2-F"  = 'purple',
+                             "2-10-F3-2-F" = 'yellow3',
+                              "3-24-F3-1-F" = 'darkgreen',
+                              "2-6-F3-1-F" = 'darkcyan',
+                              "2-10-F2-F"  = 'sandybrown'),
+                  hline = 0, vline = 0,
+                            xlim = c(-140,140),
+                  ylim = c(-35,35),
+                  legendPosition = 'right',
+                  title = 'Preprocessed + Combat Betas PCA bi-plot',
+                  subtitle = 'PC1 versus PC2')
+biplot1c
+
+
+```
+
+## ├ Violin plots
+
+```{r violin plots}
+
+# Raw Betas
+
+# transpose and make rawBetas a data frame
+rb2 <- as.data.frame(t(rep_raw))
+
+# Make rownames first column
+rb2$sample <- rownames(rb2)
+rb2$sample
+
+#add a column with sampleID
+
+linker2 <- match(rb2$sample,rep_samplesheet$uid)
+sn <- rep_samplesheet[linker2,"sampleID"]
+
+rb2$sampleID <- sn
+
+rb2$replicate <- factor(rb2$sample, levels = rb2$sample,
+                        labels = rb2$sampleID)
+
+
+# need to get the data into long format
+plong <- rb2 %>% 
+  pivot_longer(!c(sample,sampleID,replicate), names_to = "probeID", values_to = "betas")
+# head(plong,n=5)
+
+
+violin.plot1a <- ggplot(data=plong,aes(x = betas, y = replicate, color = sample, 
+                                       fill = sample)) +
+  geom_violin(show.legend = FALSE) +
+  theme_classic() +
+  stat_summary(aes(fill = sample),
+               fun="median", geom="point",size=2, position="identity") +
+  ggtitle("Raw Betas Violin Plots - dots represent medians")
+  
+violin.plot1a
+
+
+
+# SeSame (preprocessed) Betas
+
+# transpose and make rawBetas a data frame
+sb2 <- as.data.frame(t(rep_sesame))
+
+# Make rownames first column
+sb2$sample <- rownames(sb2)
+sb2$sample
+
+#add a column with sampleID
+
+linker3 <- match(sb2$sample,rep_samplesheet$uid)
+sn <- rep_samplesheet[linker3,"sampleID"]
+
+sb2$sampleID <- sn
+
+sb2$replicate <- factor(sb2$sample, levels = sb2$sample,
+                        labels = sb2$sampleID)
+
+
+# need to get the data into long format
+qlong <- sb2 %>% 
+  pivot_longer(!c(sample,sampleID,replicate), names_to = "probeID", values_to = "betas")
+# head(plong,n=5)
+
+
+violin.plot1b <- ggplot(data=qlong,aes(x = betas, y = replicate, color = sample, 
+                                       fill = sample)) +
+  geom_violin(show.legend = FALSE) +
+  theme_classic() +
+  stat_summary(aes(fill = sample),
+               fun="median", geom="point",size=2, position="identity") +
+  ggtitle("SeSame Betas Violin Plots - dots represent medians")
+  
+violin.plot1b
+
+
+
+# SeSame (preprocessed) + Combat (batch-adjusted) Betas
+
+# transpose and make rawBetas a data frame
+cb2 <- as.data.frame(t(rep_combat))
+
+# Make rownames first column
+cb2$sample <- rownames(cb2)
+cb2$sample
+
+#add a column with sampleID
+
+linker4 <- match(cb2$sample,rep_samplesheet$uid)
+sn <- rep_samplesheet[linker4,"sampleID"]
+
+cb2$sampleID <- sn
+
+cb2$replicate <- factor(cb2$sample, levels = cb2$sample,
+                        labels = cb2$sampleID)
+
+
+# need to get the data into long format
+rlong <- cb2 %>% 
+  pivot_longer(!c(sample,sampleID,replicate), names_to = "probeID", values_to = "betas")
+# head(plong,n=5)
+
+
+violin.plot1c <- ggplot(data=rlong,aes(x = betas, y = replicate, color = sample, 
+                                       fill = sample)) +
+  geom_violin(show.legend = FALSE) +
+  theme_classic() +
+  stat_summary(aes(fill = sample),
+               fun="median", geom="point",size=2, position="identity") +
+  ggtitle("ComBat Betas Violin Plots - dots represent medians")
+  
+violin.plot1c
+
+
+```
+
+# Epigenetic Age
+
+> This measure was estimated initially to distinguish the identity of
+> four of samples. In checking the genotypes, two pairs of samples had
+> an unexpected 100% match of genotypes, indicating that they were the
+> same sample. Since the apparently matching samples belong to
+> individuals with age differences of 10 and 17 years, we used the skin
+> and blood clock to figure out who the DNA belongs to in each case of
+> 100% matching genotypes: the older or the younger individual.
+
+```{r get noob betas for the epigenetic clock}
+
+
+# Next get noob betas
+
+if (file.exists(here("output","noob_betas.rds"))){
+  
+  noobBetas <- readRDS(here("output","noob_betas.rds"))
+  
+} else {
+  
+  cl <- makeCluster(16)
+  registerDoParallel(cl)
+  clusterExport(cl, c("readIDATpair","noob","getBetas"))
+  
+  noobBetas <- do.call(cbind, parLapply(cl,samplesheet$Basename, function(pfx) { 
+    getBetas(noob(readIDATpair(pfx)))
+
+    }))
+  
+  stopCluster(cl)
+  
+  saveRDS(noobBetas, file = here("output","noob_betas.rds"))
+
+}
+
+
+
+# May need to add column names before merging
+# with the epigenetic age probes.
+
+noobBetas <- as.data.frame(noobBetas)
+colnames(noobBetas) <- samplesheet$Sample_Name
+noobBetas$Name <- rownames(noobBetas)
+
+probes <- read.csv(here("supp_data","datMiniAnnotation3.csv"))
+
+
+# get betas for Horvath's probe list
+fil.noob.betas <- merge(probes, noobBetas, by = "Name", all.x = TRUE, all.y = FALSE)
+# nrow(fil.noob.betas) # 30084 is what we need
+
+# remove extra columns
+fil.noob.betas <- fil.noob.betas[-c(2:7)]
+
+colnames(fil.noob.betas)[1] <- "ProbeID"
+
+cn <- colnames(fil.noob.betas[-1])
+
+
+```
+
+<br> <br>
+
+Now prepare the samplesheet for the epigenetic clock.
+
+```{r pheno data for clock}
+
+# Add Age, Tissue, and Female (a variable for sex formatted to
+# the specifications of the epigenetic clock) to the samplesheet object.
+
+ages <- read.csv(here("supp_data","igp_ages.csv"))
+
+clock <- ages %>% 
+  select(sampleId,Age) %>% 
+  right_join(samplesheet, by = c("sampleId" = "sampleID")) %>% 
+  distinct() %>% 
+  mutate(Tissue = rep("Buccal",160)) %>% 
+  mutate(Female = ifelse(Sex=="F",1,0))
+
+
+linker5 <- match(cn,clock$Sample_Name)
+
+clock <- clock[linker5,]
+
+# identical(colnames(fil.noob.betas[-1]),clock$Sample_Name)
+
+# Upload these two files to Horvath's website.
+write.csv(clock, file = here("output","igp_horvath_samplesheet_20211104.csv"), row.names = FALSE)
+write.csv(fil.noob.betas, file = here("output","igp_horvath_betas_20211104.csv"), row.names = FALSE)
+
+rm(fil.noob.betas)
+
+```
+
+> Use the files generated in the above chunk to upload to the DNA
+> methylation age calculator website, which can be found
+> [here](http://dnamage.genetics.ucla.edu/home). You'll need to create
+> an account if you don't have one.
+
+<br> <br>
+
+> Take the output from the epigenetic clock, which is emailed to you,
+> and read it in as the first step in the following code chunk.
+
+```{r use horvath age data}
+
+# Read in output from Horvath's website
+mage <- read.csv(here("output","igp_horvath_betas_20211104.output.csv"))
+mage$SampleID <- sub('X', '', mage$SampleID)
+
+# Get skin and blood clock ages for anomalous samples.
+
+# Accidental replicates:
+
+# These are the samples run in duplicate by accident:
+skin_blood_age <- merge(mistakes,mage,by.x="Sample_Name",by.y="SampleID",all.x=TRUE,all.y=FALSE)
+
+
+skin_blood_age <- skin_blood_age[c("uid","Sample_Name","Age","DNAmAgeSkinBloodClock")] %>% 
+  kbl(caption="3-13-F2-F is a perfect genotype match with 3-13-F3-2-F and \n 3-17-F3-2-M is a perfect genotype match with 1-2-F3-1-M") %>% 
+  kable_styling("hover",full_width=F) %>% 
+  row_spec(1:2, bold = T, color = "black", background = "skyblue") %>% 
+  row_spec(3:4, bold = T, color = "black", background = "salmon")
+
+skin_blood_age
+
+# 3-13-F2-F is a perfect genotype match with 3-13-F3-2-F
+
+# 3-17-F3-2-M is a perfect genotype match with 1-2-F3-1-M
+
+
+
+```
+
+# Zero intensity probes
+
+```{r get zero intensity probes, message=FALSE, warning=FALSE}
+########################################################################
+###                                                                  ###
+###               REMOVING ZERO INTENSITY PROBES                     ###
+###                                                                  ###
+########################################################################
+
+### From the DNAmArray R Package: https://urldefense.proofpoint.com/v2/url?u=https-3A__github.com_molepi_DNAmArray&d=DwIGAg&c=sJ6xIWYx-zLMB3EPkvcnVg&r=sWbu0rLU_L4ssDfYmHby1mWqmTG4ExdsuRnL2LYjxa8&m=zYM2gm7K2prO9Jt7dxhNG1vFdBYlyEwJ_EJaDAcASlI&s=socmXYQLInnwM7c0fOpTC5UoKzpeHv_0xg5tgJ8KYoY&e=
+
+
+# This is all to get the zeroIntensityProbes. If you have them,
+# load them. Otherwise start the chunk and get a coffee.
+
+if (file.exists(here("output","zeroIntensityProbes.rds"))){
+  
+  zeroIntensityProbes <- readRDS(here("output","zeroIntensityProbes.rds"))
+} else {
+
+
+# Generate targets object
+targets <- read.metharray.sheet(here("data"))
+
+
+# get an "RGChannelSetExtended" object. They parallelize this
+# in the vignette but I purposefully do not. Ironically, it
+# breaks on the cluster, which is made for parallelization...
+
+RGset2 <- read.metharray.exp(targets = targets,verbose = TRUE, extended=TRUE)
+
+#load("DNAmArray_rgset_ext_20211111.rds")
+
+# Read idats into a DNAmArray "RGChannelSetExtended" object
+
+
+probeFiltering <- function(RGset, cutbead=3, zeroint=TRUE, verbose=TRUE){
+
+  if(class(RGset) != "RGChannelSetExtended")
+    stop("RGset should be of class 'RGChannelSetExtended' in order to perform filtering on number of beads!")
+
+  ##Filter on number of beads
+  if(verbose)
+    cat("Filtering on number of beads... \n")
+
+  beadmat <- getNBeads(RGset)
+
+  idBeadmat <- beadmat < cutbead
+  ##beadmat[idBeadmat] <- NA
+
+  if(verbose)
+    cat("On average", round(100*sum(idBeadmat)/prod(dim(idBeadmat)), 2),"% of the probes (",nrow(idBeadmat),") have number of beads below", cutbead, "\n")
+
+  ##Filter on Red and Green intensity <1
+  if(zeroint) {
+    if(verbose)
+      cat("Filtering on zero intensities... \n")
+
+    Grn <- getGreen(RGset)
+    Red <- getRed(RGset)
+
+    ##determine if Grn and/or Red intensities of type II probes are <1
+    idT2 <- Grn[getProbeInfo(RGset, type = "II")$AddressA,] < 1 | Red[getProbeInfo(RGset, type = "II")$AddressA,] < 1
+
+    ##determine if either Grn or Red intensities of Type I probes are <1
+    idT1Grn <- Grn[c(getProbeInfo(RGset, type = "I-Green")$AddressA,
+                     getProbeInfo(RGset, type = "I-Green")$AddressB),] < 1
+
+    idT1Red <- Red[c(getProbeInfo(RGset, type = "I-Red")$AddressA,
+                     getProbeInfo(RGset, type = "I-Red")$AddressB),] < 1
+
+    if(verbose) {
+      cat("On average", round(100*sum(idT2)/prod(dim(idT2)), 3),"% of the Type II probes (",nrow(idT2),") have Red and/or Green intensity below 1 \n")
+      cat("On average", round(100*sum(idT1Grn)/prod(dim(idT1Grn)), 3),"% of the Type I probes (",nrow(idT1Grn),"), measured in Green channel, have intensity below 1 \n")
+      cat("On average", round(100*sum(idT1Red)/prod(dim(idT1Red)), 3),"% of the Type I probes (",nrow(idT1Red),"), measured in Red channel, have intensity below 1 \n")
+    }
+  }
+
+  ##combine all filtered results and set NA in Red and/or Green channels
+  Red[idBeadmat] <- Grn[idBeadmat] <- NA
+
+  if(zeroint) {
+    if(verbose){
+      cat("Set filtered probes in Red and/or Green channels to NA... \n")
+    }
+
+    for(i in 1:ncol(RGset)) {
+      if(verbose & i%%100 == 0)
+        cat("... done ",i," out of ",ncol(RGset)," ... \n")
+      idRed <- c(names(which(idT2[,i])), names(which(idT1Red[,i])))
+      midRed <- match(idRed, rownames(Red))
+      Red[midRed, i] <- NA
+      idGrn <- c(names(which(idT2[,i])), names(which(idT1Grn[,i])))
+      midGrn <- match(idGrn, rownames(Grn))
+      Grn[midGrn, i] <- NA
+    }
+  }
+
+  RGChannelSet(Green = Grn, Red = Red,
+               colData = colData(RGset),
+               annotation = annotation(RGset))
+}
+
+tempfilteringRGset <- probeFiltering(RGset2,cutbead=3,zeroint=TRUE)
+rm(RGset2)
+tempbetas2 <- getBeta(preprocessRaw(tempfilteringRGset))
+rm(tempfilteringRGset)
+
+
+# get tally of samples for which a given probe is NA
+gna <- rowSums(is.na(tempbetas2))
+gna2 <- cbind.data.frame(rownames(tempbetas2),gna)
+# get probe names for probes that either had zero intensity or
+# less than three beads in > 5% of all samples.
+zeroIntensityProbes <- gna2[gna2$gna > 8,]$`rownames(tempbetas2)`
+
+length(zeroIntensityProbes) # 2,842 zero intensity probes.
+
+saveRDS(zeroIntensityProbes, file = here("output","zeroIntensityProbes.rds"))
+
+# clear up some space
+
+rm(tempbetas2)
+rm(gna)
+rm(gna2)
+
+}
+
+
+```
+
+> Use the zeroIntensityProbes vector generated in the code chunk above
+> to add to masking of probes later in the script.
+
+# Minfi RG set
+
+```{r rg and methylset, message=FALSE,warning=FALSE}
+
+# Get the minfi RGset
+
+if (file.exists(here("output","igp_rgset_20211105.rds"))) {
+  
+  RGset <- readRDS(here("output","igp_rgset_20211105.rds"))
+  
+} else {
+
+targets <- read.metharray.sheet(here("data"))
+RGset <- read.metharray.exp(targets = targets)
+saveRDS(RGset, file = here("output","igp_rgset_20211105.rds"))
+
+}
+
+
+```
+
+## ├ QC plot
+
+```{r minfi qc plots,warning=FALSE,message=FALSE}
+
+minfi_qc <- getQC(preprocessRaw(RGset))
+
+
+
+pData(RGset)$mMed <- minfi_qc$mMed
+pData(RGset)$uMed <- minfi_qc$uMed
+
+#plotQC(minfi_qc)
+
+
+```
+
+## ├ Heatmap for snps
+
+```{r minfi heatmap for snps}
+
+########################################################################
+###                                                                  ###
+###              HEATMAP FOR  SNPs                                   ###
+###                                                                  ###
+########################################################################
+
+
+###########################################
+# Create heatmap WITH accidental replicates
+###########################################
+
+SNPs <- getSnpBeta(RGset)
+
+replacer <- match(colnames(SNPs),mage$Sample_Name)
+newcolnames <- mage[replacer,c("uid")]
+SNPs2 <- as.data.frame(SNPs)
+colnames(SNPs2) <- newcolnames
+
+hmcols <- gplots::colorpanel(2750, "yellow", "black", "blue")
+pdf(here("output","Heatmap_of_SNPs_including_mistaken_replicates.pdf"),width = ncol(SNPs2)*0.2, height = 10)
+gplots::heatmap.2(as.matrix(SNPs2), 
+                  key = FALSE, 
+                  trace = "none", 
+                  dendrogram = "column",
+                  lwid = c(0.25, 4), 
+                  lhei = c(1, 3.5),
+                  srtCol=90,
+                  margins=c(6,0.5),
+                  col = hmcols,
+                  labCol = colnames(SNPs2),
+                  labRow = NA)
+dev.off()
+
+################################################
+# Create heatmap WITHOUT accidental replicates
+################################################
+
+
+# get accidental replicates
+remover <- c("3-13-F3-2-F","3-17-F3-2-M")
+
+# Remove the two accidental technical replicates and rerun
+redmage <- mage[!(mage$sampleId %in% remover),]
+
+remover2 <- mage[(mage$sampleId %in% remover),"Sample_Name"]
+
+# subset the RGset
+
+RGset3 <- RGset[,!(colnames(RGset) %in% remover2)]
+
+SNPs <- getSnpBeta(RGset3)
+
+replacer <- match(colnames(SNPs),redmage$Sample_Name)
+newcolnames <- redmage[replacer,c("uid")]
+SNPs2 <- as.data.frame(SNPs)
+colnames(SNPs2) <- newcolnames
+
+
+hmcols <- gplots::colorpanel(2750, "yellow", "black", "blue")
+pdf(here("output","Heatmap_of_SNPs_removing_mistaken_replicates.pdf"),
+    width = ncol(SNPs2)*0.2, 
+    height = 10)
+gplots::heatmap.2(as.matrix(SNPs2), 
+                  key = FALSE, 
+                  trace = "none", 
+                  dendrogram = "column",
+                  lwid = c(0.25, 4), 
+                  lhei = c(1, 3.5),
+                  srtCol=90,
+                  margins=c(6,0.5),
+                  col = hmcols,
+                  labCol = colnames(SNPs2),
+                  labRow = NA)
+dev.off()
+
+rm(RGset3)
+
+```
+
+## ├ Estimating cell composition
+
+```{r epidish cell comp estimation, message=FALSE, warning=FALSE}
+
+########################################################################
+###                                                                  ###
+###               ESTIMATING CELL COMPOSITION                        ###
+###                                                                  ###
+########################################################################
+
+
+## see here for guidance: https://urldefense.proofpoint.com/v2/url?u=https-3A__bioconductor.org_packages_release_bioc_vignettes_EpiDISH_inst_doc_EpiDISH.html&d=DwIGAg&c=sJ6xIWYx-zLMB3EPkvcnVg&r=sWbu0rLU_L4ssDfYmHby1mWqmTG4ExdsuRnL2LYjxa8&m=zYM2gm7K2prO9Jt7dxhNG1vFdBYlyEwJ_EJaDAcASlI&s=MAI0jbvjWkx6IRa1Qb7WOxVmyDiNa_rh64yytsPDbA0&e= 
+
+
+tempbetas <- getBeta(preprocessRaw(RGset))
+
+data(centEpiFibIC.m)
+data(centBloodSub.m)
+
+frac.m <- hepidish(beta.m = tempbetas, 
+                   ref1.m = centEpiFibIC.m, 
+                   ref2.m = centBloodSub.m, 
+                   h.CT.idx = 3, 
+                   method = 'RPC')
+head(frac.m)
+
+frac.m_v2 <- epidish(beta.m = tempbetas, 
+                     ref.m = centEpiFibIC.m, 
+                     method = "RPC")
+
+frac.m_v2 <- frac.m_v2$estF
+
+rm(tempbetas)
+
+pData(RGset)$Epithelial <- frac.m[,"Epi"]
+pData(RGset)$Fibroblast <- frac.m[,"Fib"]
+pData(RGset)$Bcell <- frac.m[,"B"]
+pData(RGset)$NKcell <- frac.m[,"NK"]
+pData(RGset)$CD4T <- frac.m[,"CD4T"]
+pData(RGset)$CD8T <- frac.m[,"CD8T"]
+pData(RGset)$Monocytes <- frac.m[,"Mono"]
+pData(RGset)$Neutrophils <- frac.m[,"Neutro"]
+pData(RGset)$Eosinophils <- frac.m[,"Eosino"]
+
+pData(RGset)$Epithelial_v2 <- frac.m_v2[,"Epi"]
+pData(RGset)$Fibroblast_v2 <- frac.m_v2[,"Fib"]
+pData(RGset)$IC_v2 <- frac.m_v2[,"IC"]
+
+
+
+```
+
+<br> <br>
+
+> Now get all the cell types estimates and the minfi qc information into
+> a single data frame with the epigenetic clock output (mage object).
+> Also extract samples that were flagged in the quality control checks
+> of the epigenetic clock (e.g., mismatching sex, wrong tissue, etc.).
+
+```{r merge methylation age sheet with minfi qc and cell type estimates}
+
+df <- as.data.frame(pData(RGset)) %>% 
+  select(id,mMed:IC_v2)
+
+df <- mage %>% 
+  left_join(df, by = c("Sample_Name" = "id"), suffix = c("_clock","_epidish"))
+
+
+```
+
+<br> <br>
+
+> Results from quality control:
+
+```{r findings from quality control}
+
+contam_table
+
+meffil_qc
+
+skin_blood_age
+
+plotQC(minfi_qc)
+
+df %>% 
+  filter(mMed < 10.5) %>% 
+  select(uid,mMed,uMed) %>% 
+  arrange(desc(mMed)) %>% 
+  kbl(caption = "Samples failing minfi median meth/unmeth QC metric",
+      col.names = c("sample","median_methylation","median_unmethylated")) %>% 
+  kable_styling(full_width = F, "hover")
+
+```
+
+The samples in the last plot correspond to the samples listed in the
+table.
+
+<br> <br>
+
+# Samples identified by QC
+
+Problematic Samples by **Meffil QC**:
+
+    Sex detection outlier: 
+        3-25-F2-F (low qubit concentration)
+
+    Median methylated vs unmethylated outliers:
+        3-25-F2-F (low qubit concentration),
+        3-25-F3-2-M (lowest concentration sample),
+        3-21-F3-2-M
+
+Problematic Samples by **ewastools contamination check**:
+
+        3-25-F2-F (low concentration)
+        3-25-F3-2-M (low concentration)
+        3-21-F3-2-M 
+        1-14-F3-1-M
+        3-13-F3-2-F
+        1-1-F3-2-M (low concentration, poor quality - concentrated in speedvac)
+        3-2-F3-2-M
+
+Problematic Samples by **genotyping check (100% match with the wrong
+sample)**:
+
+        3-13-F2-F is a 100% match with  3-13-F3-2-F - *remove 3-13-F3-2-F by skin and blood age.*
+        3-17-F3-2-M is a 100% match with 1-2-F3-1-M - *remove 3-17-F3-2-M by skin and blood age*
+
+<br> <br>
+
+# Samples Removed
+
+<br>
+
+Based on group discussion on 20211119. Five samples:
+
+-   3-25-F2-F
+-   3-25-F3-2-M
+-   3-21-F3-2-M
+-   3-13-F3-2-F
+-   3-17-F3-2-M
+
+<br> 
+<br> 
+<br> 
+<br>
+
+# SeSame Betas for QC
+
+>This chunk describes all probe attrition.
+
+```{r get sesame betas for qc, results='hide'}
+
+
+# Probe attrition starts here, with the sum
+# of probes that are marked NA by initial
+# masking, which set "rs" and "ch" probes to NA
+
+table(apply(rawBetas, 1, function (x) sum(is.na(x))))
+
+#     0    160  Number of Participants
+# 862927   3626 Number of Probes set to NA
+
+# Are any of these non-CpG probes identified as 
+# zero intensity?
+
+checker <- apply(rawBetas, 1, function (x) sum(is.na(x)))
+checker <- names(checker[checker==160])
+table(checker %in% zeroIntensityProbes)
+
+# Yes, 4 probes are overlapping.
+
+# set all probes to NA that were 
+# identified as zero intensity probes.
+
+# How many rows are all NA for probes after preprocessing but
+# before adding NA for zero intensity probes?
+
+prena <- apply(ppBetas, 1, function (x) sum(is.na(x)))
+
+# run table(prena) to see that 9,830 probes are NA for everyone.
+# 3,626 were initially masked because they were not CpG probes,
+# but some other type like "rs" or "ch" probes. That means that
+
+# 9,830 - 3,626 = 6204 probes failed in all samples upon 
+# initial preprocessing.
+
+# Get the probe names set to NA for everyone 
+# and see if they overlap with zeroIntensityProbes.
+
+probes_na <- names(prena[prena==160])
+
+table(probes_na %in% zeroIntensityProbes) 
+
+# 98 overlap. Remember that 4 of these are non-CpG
+# probes initially masked.
+
+length(zeroIntensityProbes) - 98 # 2744 more probes should
+# be NA after adding the zeroIntensityProbes too ppBetas.
+
+# Add that to the 9830 figure + 2744 = 12574.
+
+ppBetas[rownames(ppBetas) %in% zeroIntensityProbes==TRUE,] <- NA
+
+# how many probes are NA for everyone now?
+
+postna <- apply(ppBetas, 1, function (x) sum(is.na(x)))
+table(postna)
+
+probes_na <- names(postna[postna==160])
+
+# 12572 probes are marked NA, two less than expected.
+# Which are the two missing probes?
+
+missprobes <- zeroIntensityProbes[!(zeroIntensityProbes %in% probes_na)]
+
+# The probes are "cg02177951" "cg27111618" which do not exist in the SeSame
+# package. They are not in the rownames of the raw data object.
+
+
+# Let's remove the five samples we know we want to remove
+# based on group discussion on zoom on 20211119. Five samples:
+
+# 3-25-F2-F
+# 3-25-F3-2-M
+# 3-21-F3-2-M
+# 3-13-F3-2-F
+# 3-17-F3-2-M
+
+qc_removed <- c("3-25-F2-F","3-25-F3-2-M","3-21-F3-2-M","3-13-F3-2-F","3-17-F3-2-M")
+
+
+fbetas <- ppBetas[!(colnames(ppBetas) %in% qc_removed)]
+
+# After removing these five samples, then calculate the number
+# of probes failing in > 10% of samples and set those to NA.
+
+# get tally of samples for which a given probe is NA
+postna <- apply(fbetas, 1, function (x) sum(is.na(x)))
+
+# get probe names for probes that failed in > 10% of all samples.
+tenfail <- names(postna[postna > ncol(fbetas)*0.1])
+
+length(tenfail) 
+
+fbetas[rownames(fbetas) %in% tenfail,] <- NA
+
+# Check to make sure that worked:
+table(apply(fbetas, 1, function (x) sum(is.na(x))))
+
+####################################################################
+# total length of probes set to NA for everyone is 81,647.
+# This includes the masked non-CpG probes (n= 3,626),
+# the zero intensity probes (n = 2,736 not overlapping the 
+# initially masked probes), and the difference between these two
+# combined and the 81,647 total are the probes that failed in
+# greater than 10% of 155 samples (81647-3626-2736= 75285).
+# 866553 probes on the array total. 866553 - 81647 = 784906
+# is the maximum number of probes theoretically available for
+# analysis at this point. Additional probes are masked in low
+# frequencies (<10% of samples) depending on detection p value
+# for a given probe/sample combination (a cell in the beta matrix)
+# As a final step later in the script, all sex chromosome probes
+# will be removed. Even though that step is carried out later in 
+# the script, for the purposes of keeping all the probe attrition
+# information in one spot, here are the results of that step:
+# 16,281 sex chromosome probes dropped.
+# After dropping X and Y probes, 768625 probes remain in the data set.
+####################################################################
+
+pfail <- cbind.data.frame(colnames(fbetas),as.numeric(colSums(is.na(fbetas))))
+summary(pfail)
+
+# What percent of probes fail after removing dataset-wide masked/failed probes?
+
+pfail$numfail <- (pfail$`as.numeric(colSums(is.na(fbetas)))`- length(tenfail))
+pfail$perfail <- round((pfail$numfail/(nrow(fbetas)-length(tenfail)))*100, digits = 3)
+summary(pfail$perfail)
+
+# Include pfail$perfail in the data.table below so it can be sorted.
+
+# reorder this data frame so it can be merged with 
+# the objects, pheno, mage2, and RGset
+
+colnames(pfail) <- c("uid","totFail","nFail","perFail")
+
+
+```
+
+# QC table
+
+```{r qc table}
+
+# Use an inner join to get rid of the samples that were
+# removed in the first quality control round:
+
+# 3-25-F2-F
+# 3-25-F3-2-M
+# 3-21-F3-2-M
+# 3-13-F3-2-F
+# 3-17-F3-2-M 
+
+
+# make an object to make metadata for geo submission later:
+df_geo <- df
+
+df <- df %>% 
+  inner_join(pfail, by = ("uid")) # 155 rows. Good.
+
+# We want the contamination score in the QC table,
+# so reduce the "pheno" object prior to inner
+# joining
+
+pheno2 <- pheno %>% 
+  select(id2,outlier)
+
+df <- df %>% 
+  left_join(pheno2, by = c("Sample_Name" = "id2"))
+
+
+lister <- df %>% 
+  select(uid,predictedTissue,outlier,mMed,uMed,nFail,perFail,
+         Epithelial_v2,Fibroblast_v2,IC_v2)
+
+
+
+colnames(lister) <- c("sampleID","Tissue","contam","meth","unmeth","nFail","perFail"
+                      ,"Epithel","Fibro","Immune")
+
+lister$contam <- round(lister$contam,digits = 2)
+lister$Epithel <- round(lister$Epithel,digits = 2)
+lister$Fibro <- round(lister$Fibro,digits = 2)
+lister$Immune <- round(lister$Immune,digits = 2)
+lister$meth <- round(lister$meth,digits=1)
+lister$unmeth <- round(lister$unmeth,digits=1)
+
+
+# This is our final QC table:
+
+datatable(lister,
+          filter = "top",
+          rownames = FALSE, 
+          width = '100%', 
+          options = list(scrollX = TRUE),
+          height = '150%')
+
+  
+
+```
+
+<br> 
+<br>
+
+# ComBat batch correction
+
+>Do ComBat now with all samples that passed quality control. This gives
+more information to the function for adjusting the methylation data. After
+batch correction, subset later in the script for those samples we want to
+analyze.
+
+Before we do batch adjustment, note that the function will throw an error if
+everyone is NA on a given probe. You need to have at least two values
+that are positive for each batch. This means we need to remove the probes that have
+been designated "NA" for all individuals because they did not pass QC.
+That n = 81,647 probes. Index and remove these probes from the "fbetas"
+object prior to running the batch adjustment function(ComBat).
+
+```{r combat batch correction}
+
+if (file.exists(here("output","combatBetas.rds"))){
+  
+  combatBetas <- readRDS(here("output","combatBetas.rds"))
+  
+} else {
+
+# Get rid of rows with only NA.
+fbetas2 <- fbetas[rowSums(is.na(fbetas)) != ncol(fbetas), ]
+
+# Convert betas to m values prior to combat
+mvals <- as.matrix(BetaValueToMValue(fbetas2))
+
+identical(colnames(mvals),df$uid)
+
+# make model matrix
+modcombat <- model.matrix(~1, data = df)
+
+# Run ComBat with a parametric Bayesian framework
+mvals <- ComBat(
+dat = mvals,
+batch = df$Plate,
+mod = modcombat,
+par.prior = TRUE, # runs a parametric framework
+prior.plots = FALSE, # outputs prior plots 
+mean.only = FALSE,
+ref.batch = NULL)
+
+# convert mvals2 object into a data frame of beta values
+
+combatBetas <- as.data.frame(MValueToBetaValue(mvals))
+saveRDS(combatBetas, file = here("output","combatBetas.rds"))
+
+rm(mvals)
+rm(fbetas2)
+
+}
+
+
+rm(fbetas)
+
+
+```
+
+
+<br>
+<br>
+
+Choose which replicates to remove, but remove them later, when 
+removing all unanalyzable samples in a single step.
+ 
+
+```{r pick replicates to remove}
+# determine which replicate to remove using contamination score.
+# Lower scores are better here.
+
+remove_reps <- df %>% 
+  group_by(sampleId) %>%
+  filter(n()>1) %>% 
+  arrange(outlier) %>% 
+  group_by(sampleId) %>% 
+  summarise_all(last) %>% 
+  select(uid,outlier)
+
+```
+
+
+# Prep covariates
+
+
+
+```{r make pca cor matrix, results='hide'}
+
+
+# Start with updated SES, deprivation, and violence trauma
+# variables from Chris sent on 20220330:
+
+demo1 <- read.csv(here("supp_data","IGP_Epi_Metadata20220330.csv"))
+
+demo2 <- read.csv(here("supp_data","all_samples_log_compiled_20220106.csv"))
+
+demo3 <- demo2 %>% 
+  left_join(demo1, by = ("Serial_Number"), suffix = c("_chris","_main"))
+
+############################################################
+# There is a formatting problem in which "2-7-F3-2-F " has
+# an extra space in the ID column. Reassign the value for 
+# this person to exclude the space. It's causing problems.
+############################################################
+
+demo3[demo3$Serial_Number==27 &
+        demo3$Generation=="F3 (Child)","ID"] <- c("2-7-F3-2-F")
+
+#####################################################################
+# There is another formatting problem in which "2-10-F3-2-2" has
+# the wrong format in the ID column. Reassign the value for 
+# this person to exchange the final 2 for F. It's causing problems.
+####################################################################
+
+demo3[demo3$Serial_Number==53 &
+        demo3$Generation=="F3 (Child)","ID"] <- c("2-10-F3-2-F")
+
+
+#####################################################################
+# There is another formatting problem in which "2-7-F2-F" has two
+# rows in the data frame. Remove the row which has "Group_chris"
+# labeled as "1 and 2".
+#####################################################################
+
+demo3 <- demo3 %>% 
+  filter(!(Group_chris=="1 and 2"))
+
+
+# Create a vector to see if our current group assignments
+# match earlier group assignments.
+
+demo3$grp_match <- ifelse(demo3$Group_chris==demo3$Group_main,"Match","Not A Match")
+
+# View(cbind.data.frame(demo3$Serial_Number,demo3$Family,demo3$Group_chris,demo3$Group_main,demo3$grp_match))
+
+# They don't. Keep the group variable from Chris' latest
+# covariate spreadsheet (column name Group_chris), with the following changes:
+
+
+# Reassign the Group 4 ("double exposure") families
+# to group 4. Right now, 4-2 is assigned to group 3 
+# and 3-23 family members are assigned to group 3. Fix.
+
+fams <- grep("4-2-|3-23-",demo3$ID)
+
+demo3[fams,]$Group_chris <- 4
+
+# For some reason family 2-12 has question marks for 
+# group membership. Double check with team that this
+# is indeed a group 2 family.
+
+fams2 <- grep("2-12",demo3$ID)
+
+demo3[fams2,]$Group_chris <- 2
+
+# Family 2-9 is labeled as Group 4, but it does
+# in fact belong to group 2 according to the notes
+# in the "All_Samples_log" spreadsheet, quoted here:
+
+# "Still need to collect samples from the mother. This family was originaly 
+# labeled as "double trauma", then after our meetings in Jordan, 
+# we decided to move it to the 1980 group. That's why it holds the 
+# serial number "1".  (was labeled 4-1)"
+
+fams3 <- grep("2-9-",demo3$ID)
+
+demo3[fams3,]$Group_chris <- 2
+
+
+demo3$grp_match <- ifelse(demo3$Group_chris==demo3$Group_main,"Match","Not A Match")
+
+# View(cbind.data.frame(demo3$Serial_Number,
+#                      demo3$Family,
+#                      demo3$ID,
+#                      demo3$Group_chris,
+#                      demo3$Group_main,
+#                      demo3$grp_match))
+
+
+# Double check that each individual is in the correct group
+# by comparing the first character in ID to group assignment:
+
+checker <- substr(demo3$ID,1,1)
+checker[checker != demo3$Group_chris] 
+# The only three problems that pop up are expected - family 3-23
+# was assigned to group 4.
+
+# Group Assignments now appear to be correct for
+# The column "Group_chris", not "Group_main".
+
+#######################################################
+# rename and recode covariates
+#######################################################
+
+demo3$violence <- demo3$Violence.Mom
+demo3$deprivation <- factor(demo3$Deprivation.Binary.Mom, levels = c(0,1),
+                            labels = c("No Deprivation","Deprivation"))
+
+
+demo3$older_siblings <- demo3$X2a..How.many.older.siblings.do.you.have.
+demo3$births_before_index_child <- demo3$X2d..How.many.births..live.offsprings..did.you.have.before.the.index.child..do.not.include.miscarriages..
+demo3$births_before_sibling <- demo3$X2f..How.many.births..live.offsprings..did.you.have.who.were.born.before.the.sibling.of.the.index.child.
+
+
+
+demo3$Generation <- fct_collapse(demo3$Generation,
+                                  F1_Maternal_Grandmother = c("F1 (Maternal Grandmother)",
+                                                                "F1A (Maternal grandmother)"),
+                                  F2_Father = c("F2 (Father)"),
+                                  F2_Mother = c("F2 (Mother)"),
+                                  F3_Index_Child = c("F3 (Index Child)",
+                                                     "F3 (Index child)",
+                                                     "F3 (Child)",
+                                                     "F3 (Youth)"),
+                                  F3_Sibling = c("F3 (Sibling)"))
+
+
+
+# Recode exposure group:
+demo3$Exposure_Group <- factor(demo3$Group_chris, levels = c("1","2","3","4"),
+                     labels = c("Control","1980","2011","Double"))
+
+
+
+################################
+# Create dummy coded variables 
+# for comparisons
+################################
+
+demo3$Direct_Exposure <- case_when(
+  (demo3$Exposure_Group == "2011" & demo3$Generation == "F2_Mother") == TRUE ~ "Direct_Exposure",
+  (demo3$Exposure_Group == "2011" & demo3$Generation == "F3_Sibling") == TRUE ~ "Direct_Exposure",
+  (demo3$Exposure_Group == "1980" & demo3$Generation == "F1_Maternal_Grandmother") == TRUE ~ "Direct_Exposure",
+  (demo3$Exposure_Group) == "Control" ~ "Control")
+
+# # Check this
+# demo3 %>% 
+#   select(Exposure_Group,Generation,ID,Direct_Exposure)
+
+demo3$Direct_Exposure <- factor(demo3$Direct_Exposure, levels = c("Control","Direct_Exposure"),
+                                labels = c("Control","Direct Exposure"))
+demo3$Direct_Exposure <- relevel(demo3$Direct_Exposure, ref = "Control")
+
+demo3$Prenatal_Exposure <- case_when(
+  (demo3$Exposure_Group == "1980" & demo3$Generation == "F2_Mother") == TRUE ~ "Prenatal_Exposure",
+  (demo3$Exposure_Group == "2011" & demo3$Generation == "F3_Index_Child") == TRUE ~ "Prenatal_Exposure",
+  (demo3$Exposure_Group) == "Control" ~ "Control")
+
+# # Check this
+# demo3 %>% 
+#   select(Exposure_Group,Generation,ID,Prenatal_Exposure) %>% View()
+
+demo3$Prenatal_Exposure <- factor(demo3$Prenatal_Exposure, levels = c("Control","Prenatal_Exposure"),
+                                labels = c("Control","Prenatal Exposure"))
+demo3$Prenatal_Exposure <- relevel(demo3$Prenatal_Exposure, ref = "Control")
+
+
+demo3$Germline_Exposure <- case_when(
+  (demo3$Exposure_Group == "1980" & demo3$Generation == "F3_Sibling") == TRUE ~ "Germline_Exposure",
+  (demo3$Exposure_Group == "1980" & demo3$Generation == "F3_Index_Child") == TRUE ~ "Germline_Exposure",
+  (demo3$Exposure_Group) == "Control" ~ "Control")
+
+# # Check this
+# demo3 %>% 
+#   select(Exposure_Group,Generation,ID,Germline_Exposure) %>% View()
+
+demo3$Germline_Exposure <- factor(demo3$Germline_Exposure, levels = c("Control","Germline_Exposure"),
+                                labels = c("Control","Germline Exposure"))
+demo3$Germline_Exposure <- relevel(demo3$Germline_Exposure, ref = "Control")
+
+
+
+
+# Recode parity
+demo3$parity <- ifelse(demo3$Generation == "F2 (Mother)", demo3$older_siblings,
+                        ifelse(demo3$Generation == "F3_Index_Child", demo3$births_before_index_child,
+                               ifelse(demo3$Generation == "F3_Sibling",demo3$births_before_sibling,NA)))
+
+# convert parity to a dichotomous factor
+demo3$parity <- factor(ifelse(demo3$parity == 0, "Nulliparous","Parous"),
+                       levels = c("Nulliparous","Parous"))
+
+
+
+
+
+
+#######################################################################
+# Make a drop_sample column based on the following list of exclusions:
+#######################################################################
+
+
+# Mark all 2-5 individuals for exclusion because
+# the F2 individual is a father. No mother sample.
+
+dropper1 <- demo3[(grep("2-5-",demo3$ID)),"ID"]
+
+# Remove the lone remaining father in the sample
+# based on group discussion.
+
+#############################################################
+# Are the siblings older, as required by the research design?
+#############################################################
+
+# Get a better age variable
+library(rebus)
+
+num_pattern <- START %R% optional(" ") %R% DGT %R% optional(".") %R% optional(DGT)
+demo3$age <- str_extract(demo3$Age.years...birth.date., num_pattern)
+  
+detach("package:rebus", unload=TRUE)
+
+# Remove any siblings that are younger than the index child:
+
+dropper2 <- demo3 %>% 
+  filter(Generation == "F3_Index_Child" | Generation == "F3_Sibling") %>% 
+  select(Serial_Number,ID,Generation,age) %>% 
+  group_by(Serial_Number) %>% 
+  slice(which.min(age)) %>% 
+  filter(Generation == "F3_Sibling") %>% 
+  ungroup() %>% 
+  select(ID)
+
+
+# Double check that the only incidence of a younger sibling is in 3-13-F3-1-M. 
+# This throws off the comparisons being made, because this younger sibling is 
+# technically germline exposed. 
+# Since this is the only case of a younger sibling, just **exclude** this person.
+
+# Family 3-7 was excluded bc the mom was crying so hard and the family 
+# generally wasn't helpful. And there wasn't a sibling.
+
+dropper3 <- demo3[(grep("3-7-",demo3$ID)),"ID"]
+
+# Family 4-2 is doubly exposed. Exclude from main analyses.
+
+dropper4 <- demo3[(grep("4-2-",demo3$ID)),"ID"]
+
+# Family 3-23 is doubly exposed. Exclude from main analyses.
+
+dropper5 <- demo3[(grep("3-23-",demo3$ID)),"ID"]
+
+# There are two fathers who are not yet marked
+# for exclusion at this point, 
+# "2-4-F2-M" & "2-9-F2-M". Remove both. Get them here:
+
+dads <- grep("*F2-M",demo3$ID, value = TRUE) 
+dropper6 <- dads[dads %in% c("2-4-F2-M","2-9-F2-M")]
+
+
+################################
+# Remove family 1-6. These are
+# not really controls, since
+# the maternal grandmother was
+# exposed in 1965. Also remove
+# family 2-7. Even though the
+# mother was prenatally exposed
+# in 1965, this is not the same
+# exposure that our other 
+# prentally exposed participants
+# had in 1980. Also remove the
+# 2-7 index child.
+################################
+
+
+dropper7 <- demo3[(grep("1-6-",demo3$ID)),"ID"]
+
+dropper8 <- demo3[(grep("2-7-",demo3$ID)),"ID"]
+
+# Compare the overlap of people with methylation
+# data and people with demographic data. First
+# have to reformat the column names a bit:
+
+meth_dat <- colnames(combatBetas)
+meth_dat <- str_remove(meth_dat,"_1")
+meth_dat <- str_remove(meth_dat,"_2")
+
+
+setdiff(demo3$ID,meth_dat) # This returns:
+# [1] "2-5-F2-M"    "2-5-F3-1-F"  "2-5-F3-2-F"  "3-7-F2-F"    "3-7-F3-2-F"  "3-13-F3-2-F" "3-17-F3-2-M"
+#  [8] "3-21-F3-2-M" "3-25-F2-F"   "3-25-F3-2-M"
+
+# Those 10 samples correspond to the five that failed QC and five more
+# individuals that were excluded from the study prior to getting the
+# methylation data, so no methylation data were obtained for those
+# excluded individuals (members of families 2-5 and 3-7).
+
+# Remove samples from the demographics data frame:
+
+demo4 <- demo3 %>% # n = 155
+  filter(!(ID %in% dropper1)) %>%  # remove family 2-5, F2 is a father (n=3)
+  filter(!(ID %in% dropper2)) %>%  # remove the lone younger sibling (n=1)
+  filter(!(ID %in% dropper3)) %>%  # remove family 3-7, excluded from study (n=2)
+  filter(!(ID %in% dropper4)) %>%  # remove family 4-2, double exposure group (n=3)
+  filter(!(ID %in% dropper5)) %>%  # remove family 3-23, double exposure group (n=3)
+  filter(!(ID %in% dropper6)) %>%  # remove two fathers in families 2-4 & 2-9 (n=2)
+  filter(!(ID %in% dropper7)) %>%  # remove family 1-6, don't fit exposure criteria (n=3)
+  filter(!(ID %in% dropper8)) # remove family 2-7, don't fit exposure criteria (n=2)
+
+# That takes us from n=155 to n=136.
+
+# Finally, get only samples that have both demographic
+# and methylation data. Join the demographic data
+# with the "df" object and subset the "combatBetas" object.
+
+# First remove the replicates from the combatBetas object,
+# then change the column names so that they match the
+# "ID" column in the demo4 object.
+
+combatBetas <- combatBetas[!(colnames(combatBetas) %in% remove_reps$uid)]
+# That takes us from n=155 to n=145.
+
+meth_dat <- colnames(combatBetas)
+meth_dat <- str_remove(meth_dat,fixed("_1"))
+meth_dat <- str_remove(meth_dat,fixed("_2"))
+
+colnames(combatBetas) <- meth_dat
+
+#####################################
+# Get the double exposure and 
+# transgenerational exposure 
+# demographic and methylation data
+# right here
+#####################################
+
+if (file.exists(here("output","igp_demo_special.csv"))){
+  
+  demo_special <- read.csv(here("output","igp_demo_special.csv"))
+
+  } else {
+
+demo_special <- demo3 %>% # n = 155
+  filter(ID %in% dropper4 | # get double exposure family 4-2 (n=3)
+           ID %in% dropper5 | # get double exposure family 3-23 (n=3)
+          ID %in% dropper7)  # get transgenerationally exposed family 1-6
+
+write.csv(demo_special,here("output","igp_demo_special.csv"))
+
+methylation_special <- combatBetas[colnames(combatBetas) %in% demo_special$ID]
+
+saveRDS(methylation_special, file = here("output","igp_methylation_special.rds"))
+
+}
+
+
+################################
+# Now get the demographic
+# and methylation data for the
+# final analytical samples
+###############################
+
+
+combatBetas <- combatBetas[colnames(combatBetas) %in% demo4$ID]
+# That takes us from n=145 to n=131.
+
+demo5 <- demo4[demo4$ID %in% colnames(combatBetas),]
+# That takes us from n=136 to n=131.
+
+# now inner join the "df" object with the demo5 object
+
+df <- df %>% 
+  filter(!(uid %in% remove_reps$uid)) %>% 
+  inner_join(demo5, by = c("sampleId" = "ID"),
+             suffix = c("_df","_demo5"))
+# n=131. Good.
+
+
+# Recode plate and slide
+df$plate <- as.numeric(ifelse(df$Plate=="A",0,1))
+
+                      
+df <- df %>% 
+  group_by(Slide) %>% 
+  mutate(slide = cur_group_id())
+
+# Make SES numeric
+
+df$SES <- as.numeric(df$SES)
+
+# Arrange df so that it is in the same order as the
+# columns of combatBetas.
+
+linker6 <- match(df$sampleId,colnames(combatBetas))
+df <- df[linker6,]
+identical(df$sampleId,colnames(combatBetas))
+rownames(df) <- df$sampleId
+
+
+```
+
+# PCA
+
+```{r get PCAs}
+
+
+#############################################
+# Get Principal components for ComBat betas
+#############################################
+
+q <- pca(na.omit(combatBetas),metadata = df)
+
+# Get PCAtools::screeplot for raw betas
+igp_screeplot_2 <- PCAtools::screeplot(q, components = getComponents(q,1:10))
+igp_screeplot_2
+
+combat_plate_cor <- eigencorplot(q, metavars = c('SES',
+                             'violence','Age','plate','Female',
+                             'Epithelial_v2','Fibroblast_v2','IC_v2'),
+             rotLabX = 45,
+             cexCorval = 0.7,
+             colCorval = 'white',
+             col = c('darkblue', 'blue2', 'black', 'red2', 'darkred'),
+             posColKey = 'top',
+             main = "Batch (plate) Corrected PCA Correlations",
+             signifSymbols = c('****', '***', '**', '*', ''),
+    signifCutpoints = c(0, 0.0001, 0.001, 0.01, 0.05, 1))
+combat_plate_cor
+
+
+
+```
+
+# Slide Effects
+
+<br>
+
+> df2 object defined here, adding in the top 10 methylation PCs to the data frame.
+
+```{r anovas to test for slide effects}
+
+rotated <- tibble::rownames_to_column(q$rotated, "sampleId") %>% 
+  select(sampleId:PC10)
+
+df2 <- df %>% 
+  left_join(rotated, by = ("sampleId"))
+
+
+slide_effects <- apply(df2[c("PC1","PC2","PC3","PC4",
+                             "PC5","PC6","PC7","PC8","PC9","PC10")],2, function(x) {
+  s <- tidy(kruskal.test(x~slide, data = df2))
+  pvals <- unlist(s[[2]])
+  return(pvals)
+})
+
+df_slides <- data.frame(pc = paste0("PC",1:10),
+           p_value = round(slide_effects, digits = 3),
+           variance_explained = round(q$variance[1:10], digits = 2))
+
+df_slides %>%
+  kbl(caption = "Associations between combat methylation PCs and processing slide",
+      row.names = F) %>%
+  kable_styling(full_width = F,"hover")
+
+
+ggboxplot(df2, x = "slide", y = "PC6", color = "Plate", title = "Slide Associated with PC6")+
+  stat_compare_means(label.x = 2)
+
+
+ggboxplot(df2, x = "slide", y = "PC9", color = "Plate", title = "Slide Associated with PC9")+
+  stat_compare_means(label.x = 2)
+
+
+
+# Investigate slides 6 and 9. See if there is
+# anything different about them that might be driving
+# these associations.
+
+
+
+```
+
+## Follow-up significant PCs
+
+```{r follow up on significant slides}
+
+slides_grouped <- df2 %>% 
+  group_by(slide) %>% 
+  summarise_at(c('SES','violence','Age','plate',
+                 'Female','Epithelial_v2','Fibroblast_v2','IC_v2'), mean, na.rm = TRUE)
+
+slides_grouped <- round(slides_grouped, digits = 2)
+
+
+datatable(slides_grouped,
+          filter = "top",
+          rownames = FALSE, 
+          width = '100%', 
+          options = list(scrollX = TRUE), 
+          height = '150%') 
+
+
+#######################################
+# Is slide associated with those 
+# variables that we know are associated
+# with PC6?
+#######################################
+
+tidy(kruskal.test(df2$violence ~ df2$Slide)) # p-value = 0.005247
+# This result is expected since we placed families
+# members together.
+
+
+#######################################
+# Is slide associated with those 
+# variables that we know are associated
+# with PC9?
+#######################################
+
+tidy(kruskal.test(df2$violence ~ df2$Slide)) # p-value = 0.005247
+# This result is expected since we placed families
+# members together.
+tidy(kruskal.test(df2$SES ~ df2$Slide)) # p-value = 0.008364
+
+# Same explanation for this as for the
+# slide and violence association. Family members
+# were grouped on the same slide.
+
+
+```
+
+
+# PCA + Covariate plots
+
+<br>
+
+Give the cell type variables better names and drop
+the double exposure level in the Exposure_Group and
+the F2_Father level in the Generation column before plotting.
+
+```{r pca covariate plots}
+
+df2$Immune <- df2$IC_v2
+df2$Epithel <- df2$Epithelial_v2
+df2$Fibro <- df2$Fibroblast_v2
+
+df2$Exposure_Group <- droplevels(df2$Exposure_Group)
+df2$Generation <- droplevels(df2$Generation)
+
+###################################################
+# PC1 and cell type composition by Group
+###################################################
+
+ggplot(df2,aes(x=Immune,y=PC1, color = Exposure_Group)) +
+  geom_point(alpha = 0.4, aes(color = Exposure_Group)) +
+  ylab("PC 1") +
+  xlab("Proportion of Immune Cells") +
+  ggtitle("Pearson correlation of PC 1 and Proportion of Immune Cells") +
+  theme_classic() + geom_smooth(method = "lm") +
+  stat_cor(method="pearson") +
+  facet_wrap(~ Exposure_Group)
+
+ggplot(df2,aes(x=Fibro,y=PC1, color = Exposure_Group)) +
+  geom_point(alpha = 0.4, aes(color = Exposure_Group)) +
+  ylab("PC 1") +
+  xlab("Proportion of Fibroblasts") +
+  ggtitle("Pearson correlation of PC 1 and Proportion of Fibroblasts") +
+  theme_classic() + geom_smooth(method = "lm") +
+  stat_cor(method="pearson") +
+  facet_wrap(~ Exposure_Group)
+
+ggplot(df2,aes(x=Epithel,y=PC1, color = Exposure_Group)) +
+  geom_point(alpha = 0.4, aes(color = Exposure_Group)) +
+  ylab("PC 1") +
+  xlab("Proportion of Epithelial Cells") +
+  ggtitle("Pearson correlation of PC 1 and Proportion of Epithelial Cells") +
+  theme_classic() + geom_smooth(method = "lm") +
+  stat_cor(method="pearson") +
+  facet_wrap(~ Exposure_Group)
+
+
+##################################################
+# PC2 and cell type composition by Exposure_Group
+##################################################
+
+
+ggplot(df2,aes(x=Immune,y=PC2, color = Exposure_Group)) +
+  geom_point(alpha = 0.4, aes(color = Exposure_Group)) +
+  ylab("PC 2") +
+  xlab("Proportion of Immune Cells") +
+  ggtitle("Pearson correlation of PC 2 and Proportion of Immune Cells") +
+  theme_classic() + geom_smooth(method = "lm") +
+  stat_cor(method="pearson") +
+  facet_wrap(~ Exposure_Group)
+
+ggplot(df2,aes(x=Fibro,y=PC2, color = Exposure_Group)) +
+  geom_point(alpha = 0.4, aes(color = Exposure_Group)) +
+  ylab("PC 2") +
+  xlab("Proportion of Fibroblasts") +
+  ggtitle("Pearson correlation of PC 2 and Proportion of Fibroblasts") +
+  theme_classic() + geom_smooth(method = "lm") +
+  stat_cor(method="pearson") +
+  facet_wrap(~ Exposure_Group)
+
+ggplot(df2,aes(x=Epithel,y=PC2, color = Exposure_Group)) +
+  geom_point(alpha = 0.4, aes(color = Exposure_Group)) +
+  ylab("PC 2") +
+  xlab("Proportion of Epithelial Cells") +
+  ggtitle("Pearson correlation of PC 2 and Proportion of Epithelial Cells") +
+  theme_classic() + geom_smooth(method = "lm") +
+  stat_cor(method="pearson") +
+  facet_wrap(~ Exposure_Group)
+
+###################################################
+# Age and cell type composition by Exposure_Group
+###################################################
+
+ggplot(df2,aes(x=Age,y=Immune, color = Exposure_Group)) +
+  geom_point(alpha = 0.4, aes(color = Exposure_Group)) +
+  xlab("Age") +
+  ylab("Proportion of Immune Cells") +
+  ggtitle("Spearman correlation of Age and Proportion of Immune Cells") +
+  theme_classic() + geom_smooth(method = "lm") +
+  stat_cor(method="spearman") +
+  facet_wrap(~ Exposure_Group)
+
+ggplot(df2,aes(x=Age,y=Fibro, color = Exposure_Group)) +
+  geom_point(alpha = 0.4, aes(color = Exposure_Group)) +
+  xlab("Age") +
+  ylab("Proportion of Fibroblasts") +
+  ggtitle("Spearman correlation of Age and Proportion of Fibroblasts") +
+  theme_classic() + geom_smooth(method = "lm") +
+  stat_cor(method="spearman") +
+  facet_wrap(~ Exposure_Group)
+
+ggplot(df2,aes(x=Age,y=Epithel, color = Exposure_Group)) +
+  geom_point(alpha = 0.4, aes(color = Exposure_Group)) +
+  xlab("Age") +
+  ylab("Proportion of Epithelial Cells") +
+  ggtitle("Spearman correlation of Age and Proportion of Epithelial Cells") +
+  theme_classic() + geom_smooth(method = "lm") +
+  stat_cor(method="spearman") +
+  facet_wrap(~ Exposure_Group)
+
+
+##########################################
+# Age and cell type composition
+##########################################
+
+
+ggplot(df2,aes(x=Age,y=Immune)) +
+  geom_point(alpha = 0.7, aes(color = Exposure_Group)) +
+  xlab("Age") +
+  ylab("Proportion of Immune Cells") +
+  ggtitle("Spearman correlation of Age and Proportion of Immune Cells") +
+  theme_classic() + geom_smooth(method = "lm") +
+  stat_cor(method="spearman")
+
+ggplot(df2,aes(x=Age,y=Fibro)) +
+  geom_point(alpha = 0.7, aes(color = Exposure_Group)) +
+  xlab("Age") +
+  ylab("Proportion of Fibroblasts") +
+  ggtitle("Spearman correlation of Age and Proportion of Fibroblasts") +
+  theme_classic() + geom_smooth(method = "lm") +
+  stat_cor(method="spearman") 
+
+ggplot(df2,aes(x=Age,y=Epithel)) +
+  geom_point(alpha = 0.7, aes(color = Exposure_Group)) +
+  xlab("Age") +
+  ylab("Proportion of Epithelial Cells") +
+  ggtitle("Spearman correlation of Age and Proportion of Epithelial Cells") +
+  theme_classic() + geom_smooth(method = "lm") +
+  stat_cor(method="spearman") 
+```
+
+
+
+
+# EDA on final sample
+
+## ├ direct vs control
+
+```{r final sample direct vs control EDA}
+
+###################################
+# Direct vs Control
+###################################
+
+dvc <- df2[is.na(df2$Direct_Exposure)==FALSE,]
+
+# Deprivation
+
+ggplot(dvc, aes(Direct_Exposure, ..count..)) +
+  theme_bw() +
+  geom_bar(aes(fill = deprivation), position = "dodge") +
+  ggtitle("Distribution of Deprivation",
+          subtitle = "Direct vs Control")
+
+# Sex
+
+ggplot(dvc, aes(Direct_Exposure, ..count..)) +
+  theme_bw() +
+  geom_bar(aes(fill = Sex), position = "dodge") +
+  ggtitle("Distribution of Sex",
+          subtitle = "Direct vs Control")
+
+# Cell type
+
+set.seed(456)
+ggplot(dvc,aes(x=Direct_Exposure, y=Epithel, color = Direct_Exposure)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_jitter(alpha = 0.4, aes(color = Direct_Exposure), width = 0.065, size = 2) +
+  xlab("Exposure") +
+  ylab("Proportion of Epithelial Cells") +
+  ggtitle("Direct vs Control") +
+  theme_bw() + 
+  stat_compare_means(label.x = 1.33) +
+  theme(legend.position = "none")
+
+# Age
+
+set.seed(456)
+ggplot(dvc,aes(x=Direct_Exposure, y=Age, color = Direct_Exposure)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_jitter(alpha = 0.4, aes(color = Direct_Exposure), width = 0.065) +
+  xlab("Exposure") +
+  ylab("Age") +
+  ggtitle("Direct vs Control") +
+  theme_bw() + 
+  stat_compare_means(label.x = 1.33) +
+  theme(legend.position = "none")
+
+
+
+
+```
+
+## ├ Generation
+
+```{r final sample EDA generation}
+
+generation_grouped <- df2 %>% 
+  group_by(Generation) %>% 
+  summarise_at(c("violence","SES","Age","Immune", "Epithel", "Fibro",
+                 "Female"), mean, na.rm = TRUE)
+
+gen_grouped <- round(generation_grouped[-1], digits = 2)
+generation_grouped <- cbind.data.frame(generation_grouped$Generation,
+                                       gen_grouped)
+colnames(generation_grouped)[1] <- "Generation"
+
+datatable(generation_grouped,
+          filter = "top",
+          rownames = TRUE, 
+          width = '100%', 
+          options = list(scrollX = TRUE), 
+          height = '150%') 
+
+
+```
+
+## ├ Families
+
+```{r final sample EDA related families}
+# 
+# 
+# ggplot(dvc,aes(x=as.factor(relat_2), y=Epithel, color = Direct_Exposure)) +
+#   geom_point(alpha = 0.7) +
+#   xlab("Family") +
+#   ylab("Proportion of Epithelial Cells") +
+#   ggtitle("epithelial cells within families") +
+#   theme_bw() +
+#   geom_line()
+# 
+# 
+# ggplot(dvc,aes(x=as.factor(relat_2), y=Age, color = Direct_Exposure)) +
+#   geom_point(alpha = 0.7) +
+#   xlab("Family") +
+#   ylab("Age") +
+#   ggtitle("age differences within families") +
+#   theme_bw() +
+#   geom_line()
+
+```
+
+## ├ Direct vs control PC plots
+
+```{r pc plots direct vs control final sample}
+
+ggplot(dvc,aes(x=PC1, y=PC2, color = Sex)) +
+  geom_point(alpha = 0.7) +
+  xlab("PC1") +
+  ylab("PC2") +
+  ggtitle("Direct vs Control - color by sex") +
+  theme_bw()
+
+ggplot(dvc,aes(x=PC1, y=PC2, color = Sex)) +
+  geom_point(alpha = 0.7) +
+  xlab("PC1") +
+  ylab("PC2") +
+  ggtitle("Direct vs Control - color by sex") +
+  theme_bw() +
+  geom_text_repel(aes(x=PC1, y=PC2, label = sampleId), size = 4,
+            data = dvc[dvc$Generation=="F3_Index_Child",],
+            show.legend = FALSE)
+
+
+ggplot(dvc,aes(x=PC1, y=PC2, color = Age)) +
+  geom_point(alpha = 0.7) +
+  xlab("PC1") +
+  ylab("PC2") +
+  ggtitle("Direct vs Control - color by age") +
+  theme_bw()
+
+ggplot(dvc,aes(x=PC1, y=PC2, color = Epithel, size = Epithel)) +
+  geom_point(alpha = 0.7) +
+  xlab("PC1") +
+  ylab("PC2") +
+  ggtitle("Direct vs Control - color & point size by epithelial cell proportion") +
+  theme_bw() +
+  geom_text_repel(aes(x=PC1, y=PC2, label = sampleId), size = 4,
+            data = dvc[dvc$Epithel < 0.4,])
+
+ggplot(dvc,aes(x=PC1, y=PC2, color = Generation)) +
+  geom_point(alpha = 0.7) +
+  xlab("PC1") +
+  ylab("PC2") +
+  ggtitle("Direct vs Control - color by Generation") +
+  theme_bw()
+
+ggplot(dvc,aes(x=PC1, y=PC2, color = Generation, size = Age)) +
+  geom_point(alpha = 0.7) +
+  xlab("PC1") +
+  ylab("PC2") +
+  ggtitle("Direct vs Control - color by Generation size by Age") +
+  theme_bw() 
+
+# ggplot(dvc,aes(x=PC1, y=PC2, color = as.factor(relat_2))) +
+#   geom_point(alpha = 0.7) +
+#   xlab("PC1") +
+#   ylab("PC2") +
+#   ggtitle("Direct vs Control - color by family") +
+#   theme_bw() 
+
+
+
+ggplot(dvc,aes(x=PC1, y=PC2, color = Direct_Exposure)) +
+  geom_point(alpha = 0.7) +
+  xlab("PC1") +
+  ylab("PC2") +
+  ggtitle("Direct vs Control - color by Exposure") +
+  theme_bw() 
+
+
+```
+
+<br>
+<br>
+
+## ├ prenatal vs control
+
+```{r final sample prenatal vs control EDA}
+
+###################################
+# Prenatal vs Control
+###################################
+
+pvc <- df2[is.na(df2$Prenatal_Exposure)==FALSE,]
+
+# Deprivation
+
+ggplot(pvc, aes(Prenatal_Exposure, ..count..)) +
+  theme_bw() +
+  geom_bar(aes(fill = deprivation), position = "dodge") +
+  ggtitle("Distribution of Deprivation",
+          subtitle = "Prenatal vs Control")
+
+# Sex
+
+ggplot(pvc, aes(Prenatal_Exposure, ..count..)) +
+  theme_bw() +
+  geom_bar(aes(fill = Sex), position = "dodge") +
+  ggtitle("Distribution of Sex",
+          subtitle = "Prenatal vs Control")
+
+# Cell type
+
+set.seed(456)
+ggplot(pvc,aes(x=Prenatal_Exposure, y=Epithel, color = Prenatal_Exposure)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_jitter(alpha = 0.4, aes(color = Prenatal_Exposure), width = 0.065, size = 2) +
+  xlab("Exposure") +
+  ylab("Proportion of Epithelial Cells") +
+  ggtitle("Prenatal vs Control") +
+  theme_bw() + 
+  stat_compare_means(label.x = 1.33) +
+  theme(legend.position = "none")
+
+# Age
+
+set.seed(456)
+ggplot(pvc,aes(x=Prenatal_Exposure, y=Age, color = Prenatal_Exposure)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_jitter(alpha = 0.4, aes(color = Prenatal_Exposure), width = 0.065) +
+  xlab("Exposure") +
+  ylab("Age") +
+  ggtitle("Prenatal vs Control") +
+  theme_bw() + 
+  stat_compare_means(label.x = 1.33) +
+  theme(legend.position = "none")
+
+# There is a significant age difference here, but we do control
+# for age in the ewas.
+
+
+```
+
+## ├ Prenatal PC plots
+
+```{r pc plots prenatal vs control final sample}
+
+ggplot(pvc,aes(x=PC1, y=PC2, color = Sex)) +
+  geom_point(alpha = 0.7) +
+  xlab("PC1") +
+  ylab("PC2") +
+  ggtitle("Prenatal vs Control - color by sex") +
+  theme_bw()
+
+ggplot(pvc,aes(x=PC1, y=PC2, color = Sex)) +
+  geom_point(alpha = 0.7) +
+  xlab("PC1") +
+  ylab("PC2") +
+  ggtitle("Prenatal vs Control - color by sex") +
+  theme_bw() +
+  geom_text_repel(aes(x=PC1, y=PC2, label = sampleId), size = 4,
+            data = pvc[pvc$Generation=="F3_Index_Child",],
+            show.legend = FALSE)
+
+
+ggplot(pvc,aes(x=PC1, y=PC2, color = Age)) +
+  geom_point(alpha = 0.7) +
+  xlab("PC1") +
+  ylab("PC2") +
+  ggtitle("Prenatal vs Control - color by age") +
+  theme_bw()
+
+ggplot(pvc,aes(x=PC1, y=PC2, color = Epithel, size = Epithel)) +
+  geom_point(alpha = 0.7) +
+  xlab("PC1") +
+  ylab("PC2") +
+  ggtitle("Prenatal vs Control - color & point size by epithelial cell proportion") +
+  theme_bw() +
+  geom_text_repel(aes(x=PC1, y=PC2, label = sampleId), size = 4,
+            data = pvc[pvc$Epithel < 0.4,])
+
+ggplot(pvc,aes(x=PC1, y=PC2, color = Generation)) +
+  geom_point(alpha = 0.7) +
+  xlab("PC1") +
+  ylab("PC2") +
+  ggtitle("Prenatal vs Control - color by Generation") +
+  theme_bw()
+
+ggplot(pvc,aes(x=PC1, y=PC2, color = Generation, size = Age)) +
+  geom_point(alpha = 0.7) +
+  xlab("PC1") +
+  ylab("PC2") +
+  ggtitle("Prenatal vs Control - color by Generation size by Age") +
+  theme_bw() 
+
+# ggplot(pvc,aes(x=PC1, y=PC2, color = as.factor(relat_2))) +
+#   geom_point(alpha = 0.7) +
+#   xlab("PC1") +
+#   ylab("PC2") +
+#   ggtitle("Prenatal vs Control - color by family") +
+#   theme_bw() 
+
+
+
+ggplot(pvc,aes(x=PC1, y=PC2, color = Prenatal_Exposure)) +
+  geom_point(alpha = 0.7) +
+  xlab("PC1") +
+  ylab("PC2") +
+  ggtitle("Prenatal vs Control - color by Exposure") +
+  theme_bw() 
+
+
+```
+
+<br>
+<br>
+
+
+## ├  Germline vs control
+
+```{r final sample germline vs control EDA}
+
+###################################
+# Germline vs Control
+###################################
+
+gvc <- df2[is.na(df2$Germline_Exposure)==FALSE,]
+
+# Deprivation
+
+ggplot(gvc, aes(Germline_Exposure, ..count..)) +
+  theme_bw() +
+  geom_bar(aes(fill = deprivation), position = "dodge") +
+  ggtitle("Distribution of Deprivation",
+          subtitle = "Germline vs Control")
+
+# Sex
+
+ggplot(gvc, aes(Germline_Exposure, ..count..)) +
+  theme_bw() +
+  geom_bar(aes(fill = Sex), position = "dodge") +
+  ggtitle("Distribution of Sex",
+          subtitle = "Germline vs Control")
+
+# Cell type
+
+set.seed(456)
+ggplot(gvc,aes(x=Germline_Exposure, y=Epithel, color = Germline_Exposure)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_jitter(alpha = 0.4, aes(color = Germline_Exposure), width = 0.065, size = 2) +
+  xlab("Exposure") +
+  ylab("Proportion of Epithelial Cells") +
+  ggtitle("Germline vs Control") +
+  theme_bw() + 
+  stat_compare_means(label.x = 1.33) +
+  theme(legend.position = "none")
+
+# Age
+
+set.seed(456)
+ggplot(gvc,aes(x=Germline_Exposure, y=Age, color = Germline_Exposure)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_jitter(alpha = 0.4, aes(color = Germline_Exposure), width = 0.065) +
+  xlab("Exposure") +
+  ylab("Age") +
+  ggtitle("Germline vs Control") +
+  theme_bw() + 
+  stat_compare_means(label.x = 1.33) +
+  theme(legend.position = "none")
+
+# There is a significant age difference here, but we do control
+# for age in the ewas.
+
+
+```
+
+## ├  Germline PC plots
+
+```{r pc plots germline vs control final sample}
+
+ggplot(gvc,aes(x=PC1, y=PC2, color = Sex)) +
+  geom_point(alpha = 0.7) +
+  xlab("PC1") +
+  ylab("PC2") +
+  ggtitle("Germline vs Control - color by sex") +
+  theme_bw()
+
+ggplot(gvc,aes(x=PC1, y=PC2, color = Sex)) +
+  geom_point(alpha = 0.7) +
+  xlab("PC1") +
+  ylab("PC2") +
+  ggtitle("Germline vs Control - color by sex") +
+  theme_bw() +
+  geom_text_repel(aes(x=PC1, y=PC2, label = sampleId), size = 4,
+            data = gvc[gvc$Generation=="F3_Index_Child",],
+            show.legend = FALSE)
+
+
+ggplot(gvc,aes(x=PC1, y=PC2, color = Age)) +
+  geom_point(alpha = 0.7) +
+  xlab("PC1") +
+  ylab("PC2") +
+  ggtitle("Germline vs Control - color by age") +
+  theme_bw()
+
+ggplot(gvc,aes(x=PC1, y=PC2, color = Epithel, size = Epithel)) +
+  geom_point(alpha = 0.7) +
+  xlab("PC1") +
+  ylab("PC2") +
+  ggtitle("Germline vs Control - color & point size by epithelial cell proportion") +
+  theme_bw() +
+  geom_text_repel(aes(x=PC1, y=PC2, label = sampleId), size = 4,
+            data = gvc[gvc$Epithel < 0.4,])
+
+ggplot(gvc,aes(x=PC1, y=PC2, color = Generation)) +
+  geom_point(alpha = 0.7) +
+  xlab("PC1") +
+  ylab("PC2") +
+  ggtitle("Germline vs Control - color by Generation") +
+  theme_bw()
+
+ggplot(gvc,aes(x=PC1, y=PC2, color = Generation, size = Age)) +
+  geom_point(alpha = 0.7) +
+  xlab("PC1") +
+  ylab("PC2") +
+  ggtitle("Germline vs Control - color by Generation size by Age") +
+  theme_bw() 
+
+# ggplot(gvc,aes(x=PC1, y=PC2, color = as.factor(relat_2))) +
+#   geom_point(alpha = 0.7) +
+#   xlab("PC1") +
+#   ylab("PC2") +
+#   ggtitle("Germline vs Control - color by family") +
+#   theme_bw() 
+
+
+
+ggplot(gvc,aes(x=PC1, y=PC2, color = Germline_Exposure)) +
+  geom_point(alpha = 0.7) +
+  xlab("PC1") +
+  ylab("PC2") +
+  ggtitle("Germline vs Control - color by Exposure") +
+  theme_bw() 
+
+
+```
+
+
+<br>
+<br>
+
+# Generalized Estimating Equations
+
+>Note the following assumption of the gee function: "Data are assumed to
+be sorted so that observations on a cluster are contiguous rows for all
+entities in the formula." To set this up we'll need to read in the
+spreadsheet with designated clusters
+("igp_relatedness_coded_20220105.csv"), merge them with the df2 object. 
+Finally, order the rows by cluster ID (variable name is
+relat_2, which accounts for the related families). Then we can run a
+GEE. 
+
+```{r try a gee}
+
+# read in the relatedness/cluster coding
+
+clust_code <- read.csv(here("supp_data","igp_relatedness_coded_20220105.csv"))
+
+df2 <- df2 %>% 
+  left_join(clust_code, by = c("sampleId" = "id"))
+
+
+df2 <- df2[order(df2$relat_2),]
+
+
+model1 <- geeglm(PC6 ~ Exposure_Group,
+              data = df2,
+              id = relat_2,
+              family = gaussian,
+              corstr = "exchangeable")
+
+summary(model1)
+
+
+
+```
+
+<br>
+<br>
+
+# Final data object
+
+Read in the Illumina EPIC manifest file to get the chromosome annotation for each
+probe. Remove all x and y probes as the final step in probe filtering.
+
+```{r get the final data object}
+
+if (file.exists(here("output","final_igp_data.rds"))){
+  
+  final_igp_data <- readRDS(here("output","final_igp_data.rds"))
+  
+} else {
+
+# get a list of probes on the x and y chromosomes. Manifest file provided
+# by illumina.
+
+manifest <- read.csv(here("supp_data",
+                          "infinium-methylationepic-v-1-0-b5-manifest-file.csv"))
+
+xy_probes <- manifest %>% 
+  filter(CHR == "X" | CHR == "Y") %>% 
+  select(Name)
+
+combatBetas2 <- combatBetas[!(rownames(combatBetas) %in% xy_probes$Name),]
+
+# How many probes were lost in that step?
+nrow(combatBetas) - nrow(combatBetas2) 
+# 16,281 sex chromosome probes dropped.
+# At this point, 768625 probes remain in the data set.
+
+combatBetas3 <- t(combatBetas2)
+
+# Make the first column a key for joining tables
+combatBetas3 <- data.frame(sampleId = row.names(combatBetas3), combatBetas3)
+
+final_igp_data <- merge(df2,combatBetas3,by="sampleId")
+
+saveRDS(final_igp_data, here("output","final_igp_data.rds"))
+
+}
+
+```
+
+
+<br> 
+<br> 
+<br>
+
+
+# Final Tables
+
+> To make different table, make another exposure variable that
+has everyone's exposure assignment in a single column. Right
+now it is spread out over three columns (direct,prenatal, and
+germline exposure)
+
+```{r make table 1 for whole sample and comparisons}
+
+df2 <- df2 %>% 
+  mutate(Exposure_Group2 = case_when(
+    Direct_Exposure == "Direct Exposure" ~ "Direct Exposure",
+    Prenatal_Exposure == "Prenatal Exposure" ~ "Prenatal Exposure",
+    Germline_Exposure == "Germline Exposure" ~ "Germline Exposure",
+    Direct_Exposure == "Control" ~ "Control")) %>% 
+  mutate(Exposure_Group2 = factor(Exposure_Group2, 
+                                  levels = c("Control",
+                                             "Direct Exposure",
+                                             "Prenatal Exposure",
+                                             "Germline Exposure")))
+
+
+# Table 1
+table1( ~ Exposure_Group +
+          Generation +
+          Age + 
+          Sex + 
+          Epithel +
+          SES +
+          parity +
+          violence | Exposure_Group2, data = df2)
+
+
+# potential supp Table 1A
+table1( ~ Generation +
+          Age + 
+          Sex + 
+          SES +
+          parity +
+          violence | Exposure_Group, data = df2)
+
+# potential supp Table 1B
+table1( ~ violence | Generation*Exposure_Group, data = df2, 
+        overall = FALSE)
+
+
+```
+
+<br>
+<br>
+<br>
+
+# Sample Attrition
+
+```{r flow chart of sample attrition, out.width = "250%"}
+
+
+# This text is copied from above:
+# 
+# demo4 <- demo3 %>% # n = 155
+#   filter(!(ID %in% dropper1)) %>%  # remove family 2-5, F2 is a father (n=3)
+#   filter(!(ID %in% dropper2)) %>%  # remove the lone younger sibling (n=1)
+#   filter(!(ID %in% dropper3)) %>%  # remove family 3-7, excluded from study (n=2)
+#   filter(!(ID %in% dropper4)) %>%  # remove family 4-2, double exposure group (n=3)
+#   filter(!(ID %in% dropper5)) %>%  # remove family 3-23, double exposure group (n=3)
+#   filter(!(ID %in% dropper6)) %>%  # remove two fathers in families 2-4 & 2-9 (n=2)
+#   filter(!(ID %in% dropper7)) %>%  # remove family 1-6, don't fit exposure criteria (n=3)
+#   filter(!(ID %in% dropper8)) # remove family 2-7, don't fit exposure criteria (n=2)
+
+# That takes us from n=155 to n=136.
+
+mermaid("
+graph TB
+
+
+
+title[<u>IGP Sample Attrition</u>]
+title-->A
+style title fill:#FFF,stroke:#FFF
+linkStyle 0 stroke:#FFF,stroke-width:0;
+
+
+A[Demographic Data n = 156] -->|Remove duplicate row for 2-7-F2-F, n=1| B
+B[n = 155] -->|remove family 2-5, F2 is a father, n=3| C
+C[n = 152] -->|remove the lone younger sibling, n=1| D
+D[n = 151] --> |remove family 3-7, excluded from study, n=2|E
+E[n = 149] --> |remove family 4-2, double exposure group, n=3|F
+F[n = 146] --> |remove family 3-23, double exposure group, n=3|G
+G[n = 143] --> |remove two fathers in families 2-4 & 2-9, n=2|H
+H[n = 141] --> |remove family 1-6, don't fit exposure criteria, n=3|I
+I[n = 138] --> |remove family 2-7, don't fit exposure criteria, n=2|J
+J[n = 136] --> |remove samples with no DNA methylation data, n=5|K
+K[Final Sample n = 131]
+"
+)
+
+
+```
+
+# Probe Attrition
+
+```{r probe attrition}
+
+# This text is copied from above:
+
+####################################################################
+# total length of probes set to NA for everyone is 81,647.
+# This includes the masked non-CpG probes (n= 3,626),
+# the zero intensity probes (n = 2,736 not overlapping the 
+# initially masked probes), and the difference between these two
+# combined and the 81,647 total are the probes that failed in
+# greater than 10% of 155 samples (81647-3626-2736= 75285).
+# 866553 probes on the array total. 866553 - 81647 = 784906
+# is the maximum number of probes theoretically available for
+# analysis at this point. Additional probes are masked in low
+# frequencies (<10% of samples) depending on detection p value
+# for a given probe/sample combination (a cell in the beta matrix)
+# As a final step later in the script, all sex chromosome probes
+# will be removed. Even though that step is carried out later in 
+# the script, for the purposes of keeping all the probe attrition
+# information in one spot, here are the results of that step:
+# 16,281 sex chromosome probes dropped.
+# After dropping X and Y probes, 768625 probes remain in the data set.
+####################################################################
+
+mermaid("
+graph TB
+
+title[<u>IGP Probe Attrition</u>]
+title-->A
+style title fill:#FFF,stroke:#FFF
+linkStyle 0 stroke:#FFF,stroke-width:0;
+
+
+A[Total probes on array n = 866,553] -->|remove non-CpG probes, n = 3,626| B
+B[n = 862,927] -->|remove zero intensity or <3 bead probes, n = 2,736| C
+C[n = 860,191] -->|remove probes failing in >10% of samples, n = 75,285| D
+D[n = 784,906] --> |remove sex chromosome probes, n = 16,281|E
+E[Final probe set n = 768,625] 
+"
+)
+
+```
+
+# Session Info
+
+```{r session information}
+
+devtools::session_info()
+
+```
+
+# Gene Expression Omnibus
+
+## Methylation data
+
+> Preprocessed (normalized) data are in the ppBetas object:
+
+```{r get data objects for geo deposition}
+
+# rearrange the object to comply with formatting for GEO deposition:
+
+ppBetasGEO <- cbind.data.frame(rownames(ppBetas),ppBetas)
+colnames(ppBetasGEO)[1] <- "ID_REF"
+
+# rm(ppBetas)
+
+# add in the detection p-values below
+
+
+```
+
+
+> Get raw data here:
+
+```{r get geo raw data deposition}
+
+
+if(file.exists(here("data", "igp_raw_GEO.rds"))) {
+
+raw_igp_GEO <- readRDS(file = here("data", "igp_raw_GEO.rds"))
+
+} else {
+ 
+ cl <- makeCluster(8)
+ registerDoParallel(cl)
+ clusterExport(cl, c("readIDATpair"))
+
+
+ raw_igp_GEO <- parLapply(cl,samplesheet$Basename, function(pfx) {
+   readIDATpair(pfx)
+   
+   
+ })
+
+ stopCluster(cl)
+
+ names(raw_igp_GEO) <- samplesheet$uid
+
+ saveRDS(raw_igp_GEO, file = here("data","igp_raw_GEO.rds"))
+
+}
+
+```
+
+
+Note that the control probes are not included in the manifest that Illumina submitted to GEO, so if you do include them your submission may get kicked back. Remove control probes before writing to a table to submit to GEO. Store the probes to remove in the "missing probes" object.
+
+```{r check for missing probes geo submission}
+
+my_table <- raw_igp_GEO[[1]]$Probe_ID
+
+old_table <- read.table(here("supp_data","GPL21145-48548.txt"),
+                        header = TRUE, fill = TRUE)
+
+table(my_table %in% old_table$ID)
+
+missing_probes <- my_table[!(my_table %in% old_table$ID)]
+
+
+```
+
+
+
+> Get detection p values here:
+
+```{r get detection pvals for epigenetic age analyses}
+
+if(file.exists(here("data", "igp_raw_pvals_GEO.rds"))) {
+
+pvals <- readRDS(file = here("data", "igp_raw_pvals_GEO.rds"))
+
+} else {
+
+# How to get the detection p-values
+cl <- makeCluster(8)
+ registerDoParallel(cl)
+ clusterExport(cl, c("pOOBAH"))
+
+
+ pvals <- do.call(cbind,parLapply(cl,raw_igp_GEO[1:160], function(x) {
+   pOOBAH(x, return.pval = TRUE)
+   
+ }))
+
+ stopCluster(cl)
+ 
+ 
+
+ saveRDS(pvals, file = here("data","igp_raw_pvals_GEO.rds"))
+ 
+}
+
+pvals <- as.data.frame(pvals)
+
+pvals$ID_REF <- rownames(pvals)
+
+```
+
+Now combine the processed betas with the detection p-values. Write a .gz compressed .csv file with the required formatting.
+
+```{r combine processed p values with processed beta values eaa}
+
+detection_pvals <- pvals
+
+colnames(detection_pvals)[-ncol(detection_pvals)] <- 
+  paste(colnames(pvals)[-ncol(detection_pvals)], "Detection Pval", sep = " ")
+
+processed <- merge(ppBetasGEO,detection_pvals, by = "ID_REF")
+
+processed <- processed[,order(colnames(processed))]
+
+# Make ID_REF the first column to appear
+processed <- processed %>%
+  relocate(ID_REF) %>% 
+  # Now remove the control probes that 
+  # do not appear in the geo EPIC table
+  filter(!(ID_REF %in% missing_probes))
+
+
+
+
+# fwrite(processed,
+#           file = here("output","geo_igp_processed_matrix_v1.csv.gz"),
+#           row.names = FALSE)
+
+
+```
+
+Now format the raw data and combine with the detection p-values
+
+```{r format raw data and combine with detection p values}
+
+# Select the appropriate signal intensity values for Type I
+# and Type II Infinium probes respectively.
+
+unprocessed <- lapply(raw_igp_GEO, function(x) {
+  
+  x <- x %>% 
+    mutate(methylated = case_when(
+      col == "2" ~ UG,
+      col == "G" ~ MG,
+      col == "R" ~ MR)) %>% 
+    mutate(unmethylated = case_when(
+      col == "2" ~ UR,
+      col == "G" ~ UG,
+      col == "R" ~ UR)) %>% 
+    select(Probe_ID,methylated,unmethylated) %>% 
+    rename(ID_REF = Probe_ID,
+           "Methylated signal" = methylated,
+           "Unmethylated signal" = unmethylated)
+})
+
+# Change the column names to match formatting requirements
+unprocessed <- imap(unprocessed, ~rename_all(.x, function(z) paste(.y, z, sep = " "))) %>%
+  bind_cols() %>% 
+  rename(ID_REF = 1) %>% 
+  select(-contains(" ID_REF"))
+  
+  
+# Now combine with the detection p-values
+
+unprocessed_detect <- unprocessed %>% 
+  left_join(detection_pvals, by = c("ID_REF"))
+  
+
+
+# Then reorder the columns as prescribed by GEO
+unprocessed_detect <- unprocessed_detect %>% 
+  select(order(colnames(unprocessed_detect),decreasing = TRUE)) %>% 
+  relocate(ID_REF, everything()) %>% 
+  # Now remove the control probes that 
+  # do not appear in the geo EPIC table
+  filter(!(ID_REF %in% missing_probes))
+
+# fwrite(unprocessed_detect,
+#           file = here("output","geo_igp_matrix_signal_v1.csv.gz"),
+#           row.names = FALSE)
+
+
+```
+
+## metadata
+
+```{r epigenetic age analyses geo metadata sheet}
+
+igp_geo_metadata <- df_geo %>% 
+  mutate(title = paste("genomic DNA from buccal swab",
+                       1:nrow(df_geo),
+                       sep = " "),
+         "source name" = paste("buccal swab",
+                               1:nrow(df_geo),
+                               sep = " "),
+         organism = c("Homo sapiens"),
+         "idat file 1" = paste(str_sub(Basename,-19,-1),
+                               "_Grn.idat",
+                               sep = ""),
+         "idat file 2" = paste(str_sub(Basename,-19,-1),
+                               "_Red.idat",
+                               sep = ""),
+         "characteristics: gender" = if_else(Sex == "M","Male","Female"),
+         "characteristics: epithelial cell proportion" = Epithelial,
+         molecule = c("genomic DNA"),
+         label = c("Cy5 and Cy3"),
+         description = c("normal buccal swab"),
+         platform = c("GPL21145")) %>% 
+  select(uid,sampleId, title, `source name`, organism,
+         `idat file 1`, `idat file 2`, `characteristics: gender`,
+         `characteristics: epithelial cell proportion`,
+         molecule,label,description, platform)
+
+# Get the ages and serial numbers from demo3 object
+
+igp_geo_metadata2 <- demo3 %>% 
+  select(ID,Serial_Number,age) %>% 
+  right_join(igp_geo_metadata, by = c("ID" = "sampleId"))
+
+# Get the family relationship variables
+
+igp_geo_metadata3 <- clust_code %>%
+  select(-relationships) %>% 
+  right_join(igp_geo_metadata2, by = c("id" = "ID"))
+
+# Get the samples that passed qc (n=155), and the samples included
+# in the final analytical sample (n=131)
+
+igp_geo_metadata4 <- igp_geo_metadata3 %>% 
+  mutate(included_in_final_analytical_sample = if_else(uid %in% df2$uid, TRUE, FALSE)) %>% 
+  mutate(passed_methylation_quality_control = if_else(id %in% qc_removed, FALSE, TRUE))
+
+# Label the replicates and replicate id
+
+igp_geo_metadata5 <- samplesheet %>% 
+  select(uid,replicate,replicate_id,Plate,Slide) %>% 
+  right_join(igp_geo_metadata4, by = c("uid"))
+
+# Add in generation, conflict exposure, and generational exposure
+
+igp_geo_metadata6 <- df2 %>% 
+  select(uid, Generation, Exposure_Group, Exposure_Group2) %>% 
+  right_join(igp_geo_metadata5, by = c("uid")) %>% 
+  select(-Slide.x) %>% 
+  rename(Slide = "Slide.y")
+  
+
+# Get the ses, violence, deprivation from the updated metadata sheet
+igp_geo_metadata7 <- read.csv(here("supp_data","IGP_Epi_Metadata_20221016.csv")) %>% 
+  select(Serial_Number,
+         Violence.Mom,
+         Deprivation.Binary.Mom,
+         SES,
+         affss,
+         X2a..How.many.older.siblings.do.you.have.,
+         X2d..How.many.births..live.offsprings..did.you.have.before.the.index.child..do.not.include.miscarriages..,
+         X2f..How.many.births..live.offsprings..did.you.have.who.were.born.before.the.sibling.of.the.index.child.) %>% 
+  right_join(igp_geo_metadata6, by = c("Serial_Number"))
+
+##############################
+# Parity
+#############################
+
+igp_geo_metadata7$older_siblings <- igp_geo_metadata7$X2a..How.many.older.siblings.do.you.have.
+igp_geo_metadata7$births_before_index_child <- igp_geo_metadata7$X2d..How.many.births..live.offsprings..did.you.have.before.the.index.child..do.not.include.miscarriages..
+igp_geo_metadata7$births_before_sibling <- igp_geo_metadata7$X2f..How.many.births..live.offsprings..did.you.have.who.were.born.before.the.sibling.of.the.index.child.
+
+
+# Recode parity
+igp_geo_metadata7$parity <- ifelse(igp_geo_metadata7$Generation == "F2 (Mother)", igp_geo_metadata7$older_siblings,
+                        ifelse(igp_geo_metadata7$Generation == "F3_Index_Child", igp_geo_metadata7$births_before_index_child,
+                               ifelse(igp_geo_metadata7$Generation == "F3_Sibling",igp_geo_metadata7$births_before_sibling,NA)))
+
+# convert parity to a dichotomous factor
+igp_geo_metadata7$birth_order <- ifelse(igp_geo_metadata7$parity == 0, "Firstborn","Laterborn")
+
+# Get a dichotomized food insecurity measure based on Arabic
+# family food security scale
+igp_geo_metadata7$food_security <- ifelse(igp_geo_metadata7$affss > 0, "Food Insecure", "Food Secure")
+
+# Make the deprivation variable a factor with sensible labels:
+igp_geo_metadata7$material_deprivation <- ifelse(igp_geo_metadata7$Deprivation.Binary.Mom > 0, "No Deprivation","Deprivation")
+
+igp_geo_metadata8 <- igp_geo_metadata7 %>% 
+  select(uid,
+         title,
+         `source name`,
+         organism,
+         `idat file 1`,
+         `idat file 2`,
+         `characteristics: gender`,
+         `characteristics: epithelial cell proportion`,
+         id,
+         age,
+         relat_1,
+         relat_2,
+         passed_methylation_quality_control,
+         included_in_final_analytical_sample,
+         replicate,
+         replicate_id,
+         Serial_Number,
+         Plate,
+         Slide,
+         Violence.Mom,
+         Deprivation.Binary.Mom,
+         SES,
+         affss,
+         birth_order,
+         molecule,
+         label,
+         description,
+         platform) %>% 
+  rename('unique_id' = uid,
+         'characteristics: individual' = id,
+         'characteristics: age' = age,
+         'characteristics: nuclear family' = relat_1,
+         'characteristics: extended family' = relat_2,
+         'characteristics: passed methylation quality control' = passed_methylation_quality_control,
+         'characteristics: included in final analytical sample' = included_in_final_analytical_sample,
+         'characteristics: replicate' = replicate,
+         'characteristics: replicate id' = replicate_id,
+         'characteristics: Serial Number' = Serial_Number,
+         'characteristics: plate' = Plate,
+         'characteristics: slide' = Slide,
+         'characteristics: violence trauma' = Violence.Mom,
+         'characteristics: material deprivation' = Deprivation.Binary.Mom,
+         'characteristics: socioeconomic status' = SES,
+         'characteristics: arabic family food security scale' = affss,
+         'characteristics: birth order' = birth_order)
+
+
+
+# fwrite(igp_geo_metadata8,
+#           file = here("output","igp_geo_metadata_v1.csv"),
+#           row.names = FALSE)
+
+```
+
+
+
+Don't forget to write out a codebook explaining column headers in the metadata sheet.
+
+```{r make a codebook for geo deposition}
+
+sub_names <- colnames(igp_geo_metadata8)
+
+df <- data.frame(matrix(ncol = 2, nrow = length(colnames(igp_geo_metadata8))))
+df$X1 <- sub_names
+colnames(df) <- c("column header","description")
+
+df$description <- c("unique sample id",
+                    "unique title that describes the sample",
+                    "briefly identify the biological material",
+                    "scientific name of organism from which the biological material was derived",
+                    "the Green .idat file corresponding to the sample",
+                    "the Red .idat file corresponding to the sample",
+                    "the sex of the participant",
+                    "proportion of epithelial cells in the sample",
+                    "unique participant id",
+                    "age of the participant",
+                    "nuclear family id",
+                    "extended family id",
+                    "indicator for whether a given sample passed methylation quality control",
+                    "indicator for whether a given sample was included in the final analytical sample of n=131 for the epigenome-wide association study",
+                    "is the sample a replicate",
+                    "a unique id assigned to a sample within replicate groups",
+                    "a unique number given to each family",
+                    "bisulfite conversion plate",
+                    "EPIC BeadChip id",
+                    "a variable measuring maternal exposure to violence trauma",
+                    "a variable indicating exposure to material deprivation",
+                    "a measure of socioeconomic status",
+                    "score on the arabic family food security scale",
+                    "birth order of the individual",
+                    "type of molecule that was extracted from the biological materials",
+                    "compound used to label the extract",
+                    "basic description of the sample",
+                    "what platform were samples processed on")
+
+# fwrite(df,
+#           file = here("output","igp_geo_column_headers_v1.csv.gz"),
+#           row.names = FALSE)
+
+
+
+```
+

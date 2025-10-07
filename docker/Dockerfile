@@ -64,6 +64,26 @@ RUN mkdir -p /workspace/r_package_cache
 RUN --mount=type=cache,target=/workspace/r_package_cache,uid=1000,gid=1000 \
     micromamba run -n ${ENV_NAME} Rscript install_packages.R
 
+# Cache essential sesame reference data (required for IDAT reading)
+# Only download specific files for EPIC arrays (faster and more reliable than bulk download)
+RUN micromamba run -n ${ENV_NAME} Rscript -e " \
+    library(sesame); \
+    library(sesameData); \
+    options(timeout = 600); \
+    cat('Downloading essential sesame reference files...\n'); \
+    required_files <- c('EPIC.address', 'idatSignature', 'KYCG.EPIC.Mask.20220123'); \
+    for (file in required_files) { \
+      tryCatch({ \
+        cat(paste('  Caching', file, '...\n')); \
+        sesameDataCache(file); \
+        cat(paste('  ✓', file, '\n')); \
+      }, error = function(e) { \
+        cat(paste('  Note:', file, 'cache issue\n')); \
+      }); \
+    }; \
+    cat('✓ Essential sesame reference data cached\n'); \
+    "
+
 # =============================================================================
 # Stage 4: Final runtime image
 # =============================================================================

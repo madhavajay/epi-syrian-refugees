@@ -343,6 +343,60 @@ echo "✓ R packages installation complete - created marker file"
 
 echo ""
 echo "========================================="
+echo "Caching sesame reference data"
+echo "========================================="
+echo ""
+
+# Cache essential sesame reference data (required for IDAT reading)
+# Only download specific files needed for EPIC arrays to avoid slow/unreliable bulk downloads
+if [[ "$ARCH" == "arm64" ]] && [[ "$OS" == "Darwin" ]]; then
+    echo "Caching essential sesame data (forcing x86_64 via Rosetta)..."
+    arch -x86_64 /bin/bash -c "'$RSCRIPT' -e \"
+        library(sesame)
+        library(sesameData)
+        options(timeout = 600)  # 10 min timeout for slow connections
+        cat('Downloading essential sesame reference files...\\n')
+
+        # Cache all required files for EPIC arrays (exact names from error messages)
+        required_files <- c('EPIC.address', 'idatSignature', 'KYCG.EPIC.Mask.20220123')
+        for (file in required_files) {
+          tryCatch({
+            cat(paste('  Caching', file, '...\\n'))
+            sesameDataCache(file)
+            cat(paste('  ✓', file, '\\n'))
+          }, error = function(e) {
+            cat(paste('  Note:', file, 'cache issue\\n'))
+          })
+        }
+
+        cat('✓ Essential sesame reference data cached\\n')
+    \""
+else
+    echo "Caching essential sesame data..."
+    "$RSCRIPT" -e "
+        library(sesame)
+        library(sesameData)
+        options(timeout = 600)  # 10 min timeout for slow connections
+        cat('Downloading essential sesame reference files...\n')
+
+        # Cache all required files for EPIC arrays (exact names from error messages)
+        required_files <- c('EPIC.address', 'idatSignature', 'KYCG.EPIC.Mask.20220123')
+        for (file in required_files) {
+          tryCatch({
+            cat(paste('  Caching', file, '...\n'))
+            sesameDataCache(file)
+            cat(paste('  ✓', file, '\n'))
+          }, error = function(e) {
+            cat(paste('  Note:', file, 'cache issue\n'))
+          })
+        }
+
+        cat('✓ Essential sesame reference data cached\n')
+    "
+fi
+
+echo ""
+echo "========================================="
 echo "Environment setup complete!"
 echo "========================================="
 echo ""

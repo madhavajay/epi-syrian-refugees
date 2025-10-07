@@ -68,12 +68,8 @@ if [ -d "$DOWNLOAD_IDAT_DIR" ]; then
 
             trimmed_name=$(echo "$base_name" | sed 's/^GSM[0-9]*_//')
             if [[ "$trimmed_name" != "$base_name" ]]; then
+                # Only create .gz symlink - R packages (minfi/sesame) handle .gz directly
                 ln -sf "$IDAT_SOURCE_ABS/$base_name" "data/${trimmed_name}"
-
-                trimmed_no_gz="${trimmed_name%.gz}"
-                if [[ "$trimmed_no_gz" != "$trimmed_name" ]]; then
-                    ln -sf "$IDAT_SOURCE_ABS/$base_name" "data/${trimmed_no_gz}"
-                fi
             fi
         done < <(find "$IDAT_SOURCE_ABS" -maxdepth 1 -type f -name "*.idat.gz")
         echo "  ✓ IDAT symlinks refreshed"

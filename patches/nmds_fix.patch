@@ -1,0 +1,51 @@
+--- a/script/igp_quality_control_20230222.Rmd
++++ b/script/igp_quality_control_20230222.Rmd
+@@ -225,13 +225,36 @@
+ ```{r nmds}
+
+ set.seed(1)
+
+ df6 <- t(df2)
++
++## Ensure df6 is a proper numeric matrix
++df6 <- apply(df6, 2, as.numeric)
++rownames_backup <- rownames(df6)
++df6 <- as.matrix(df6)
++if (!is.null(rownames_backup)) {
++    rownames(df6) <- rownames_backup
++}
++
++## Adaptive k based on sample size
++n_samples <- nrow(df6)
++k_nmds <- min(4, max(2, n_samples - 1))
++
++if (n_samples < 3) {
++    warning("Not enough samples (", n_samples, ") for NMDS analysis; skipping")
++    # Create empty placeholder to avoid breaking downstream code
++    x <- list(points = matrix(0, nrow = n_samples, ncol = 2))
++    x1 <- list(sites = matrix(0, nrow = n_samples, ncol = 2, dimnames = list(rownames(df6), c("NMDS1", "NMDS2"))))
++} else {
++    ## note, needed to bump up k=4 to reach solution.
++    ## see https://urldefense.proofpoint.com/v2/url?u=https-3A__www.rdocumentation.org_packages_vegan_versions_2.4-2D2_topics_metaMDS&d=DwIGAg&c=sJ6xIWYx-zLMB3EPkvcnVg&r=sWbu0rLU_L4ssDfYmHby1mWqmTG4ExdsuRnL2LYjxa8&m=li-cnHgg-H1IOjYcjupkBUAyTcjwoMMEN04ziqv6ZGA&s=WpFzsU-2Hp0_0pOhCTNeDxQfLF-9em67v2-9OyCfgGU&e=
++    x <-  metaMDS(df6, distance="bray", trymax = 50, k=k_nmds)
++    x1 <- plot(x)
++}
+
+-## note, needed to bump up k=4 to reach solution.
+-## see https://urldefense.proofpoint.com/v2/url?u=https-3A__www.rdocumentation.org_packages_vegan_versions_2.4-2D2_topics_metaMDS&d=DwIGAg&c=sJ6xIWYx-zLMB3EPkvcnVg&r=sWbu0rLU_L4ssDfYmHby1mWqmTG4ExdsuRnL2LYjxa8&m=li-cnHgg-H1IOjYcjupkBUAyTcjwoMMEN04ziqv6ZGA&s=WpFzsU-2Hp0_0pOhCTNeDxQfLF-9em67v2-9OyCfgGU&e=
+-x <-  metaMDS(df6, distance="bray", trymax = 50, k=4)
++if (n_samples >= 3) {
+
+-x1 <- plot(x)
+
+ df7 <- as.data.frame(x1$sites)
+
+@@ -264,6 +287,8 @@
+ plot5 <- ggplot(df7[which(df7$grp =="3."),], aes(x=NMDS1,y=NMDS2,color=fam)) +
+   geom_text(aes(label = fam), size = 4) +
+   geom_mark_ellipse(expand = 0,aes(fill=fam))
+ plot5
+
++}  # End of n_samples >= 3 check
++
+ ```
