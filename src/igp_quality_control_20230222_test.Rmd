@@ -1284,7 +1284,7 @@ if (file.exists(here("output","zeroIntensityProbes.rds"))){
 
 
 # Generate targets object
-targets <- read.metharray.sheet(here("data"))
+targets <- read.metharray.sheet(here("data"), pattern = "cMulligan_SampleSheet160\\.csv$")
 
 
 # get an "RGChannelSetExtended" object. They parallelize this
@@ -1408,7 +1408,7 @@ if (file.exists(here("output","igp_rgset_20211105.rds"))) {
   
 } else {
 
-targets <- read.metharray.sheet(here("data"))
+targets <- read.metharray.sheet(here("data"), pattern = "cMulligan_SampleSheet160\\.csv$")
 RGset <- read.metharray.exp(targets = targets)
 saveRDS(RGset, file = here("output","igp_rgset_20211105.rds"))
 
