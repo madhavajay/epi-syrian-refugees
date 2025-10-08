@@ -7,6 +7,8 @@ TEST_MODE=false
 FIXED_MODE=false
 DOCKER_MODE=false
 NO_DOCKER_FLAG=false
+CORES=""
+STAGE=""
 PASSTHRU_ARGS=()
 
 while [[ $# -gt 0 ]]; do
@@ -28,9 +30,24 @@ while [[ $# -gt 0 ]]; do
             NO_DOCKER_FLAG=true
             shift
             ;;
+        --cores)
+            CORES="$2"
+            shift 2
+            ;;
+        --stage)
+            STAGE="$2"
+            shift 2
+            ;;
         *)
             echo "Unknown option: $1"
-            echo "Usage: $0 [--test] [--fixed] [--docker]"
+            echo "Usage: $0 [--test] [--fixed] [--docker] [--cores N] [--stage N]"
+            echo ""
+            echo "Stages:"
+            echo "  1 = Setup & Initial QC (quick)"
+            echo "  2 = Read IDATs & Correlations (8-12 hours) [default]"
+            echo "  3 = Replicate Analysis"
+            echo "  4 = Full QC"
+            echo "  5 = Complete Analysis"
             exit 1
             ;;
     esac
@@ -87,11 +104,45 @@ else
     RMD_PATH="$RMD_PATH_BASE"
 fi
 
-export IGP_CORES=${IGP_CORES:-8}
+# Set number of cores (priority: --cores flag > IGP_CORES env var > default 8)
+if [ -n "$CORES" ]; then
+    export IGP_CORES="$CORES"
+else
+    export IGP_CORES=${IGP_CORES:-8}
+fi
+
+# Set analysis stage (priority: --stage flag > IGP_STAGE env var > default 2)
+if [ -n "$STAGE" ]; then
+    export IGP_STAGE="$STAGE"
+else
+    export IGP_STAGE=${IGP_STAGE:-2}
+fi
+
 export IGP_TEST_MODE=0
 export DYLD_FALLBACK_LIBRARY_PATH="$(pwd)/libs:${DYLD_FALLBACK_LIBRARY_PATH:-}"
 IDAT_DOWNLOAD_DIR="$(pwd)/downloads/idat"
 echo "✓ Environment found"
+
+# Clean up conflicting CSV files in data/ directory
+# minfi::read.metharray.sheet() reads ALL CSV files, so we need to ensure
+# only the correct SampleSheet exists based on test mode
+if [ "$TEST_MODE" = true ]; then
+    # Test mode: Keep test file, backup production file
+    if [ -f "data/cMulligan_SampleSheet160.csv" ]; then
+        mv -f data/cMulligan_SampleSheet160.csv data/cMulligan_SampleSheet160.csv.bak 2>/dev/null || true
+    fi
+    if [ -f "data/cMulligan_SampleSheet_test.csv.bak" ]; then
+        mv -f data/cMulligan_SampleSheet_test.csv.bak data/cMulligan_SampleSheet_test.csv 2>/dev/null || true
+    fi
+else
+    # Production mode: Keep production file, backup test file
+    if [ -f "data/cMulligan_SampleSheet_test.csv" ]; then
+        mv -f data/cMulligan_SampleSheet_test.csv data/cMulligan_SampleSheet_test.csv.bak 2>/dev/null || true
+    fi
+    if [ -f "data/cMulligan_SampleSheet160.csv.bak" ]; then
+        mv -f data/cMulligan_SampleSheet160.csv.bak data/cMulligan_SampleSheet160.csv 2>/dev/null || true
+    fi
+fi
 
 # Check if directories are set up
 if [ ! -d "supp_data" ] || [ ! -d "output" ] || [ ! -d "script" ]; then
@@ -125,20 +176,34 @@ echo "✓ Analysis script found"
 # Ensure clustering chunk handles small sample sizes
 python3 - <<'PY'
 from pathlib import Path
-blocks = []
-for path_str in [
+
+paths = [
     'script/igp_quality_control_20230222.Rmd',
     'src/igp_quality_control_20230222_test.Rmd',
     'src/igp_quality_control_20230222_fixed.Rmd',
-]:
+]
+
+cluster_old = """plot(fit) # display dendogram\nrect.hclust(fit,k=54)\n\ngroups <- cutree(fit, k=54)\n\ngroups <- as.data.frame(groups)\n\ngroups <- cbind(groups, metadata)\n"""
+
+cluster_new = """plot(fit) # display dendogram\nsample_count <- length(fit$order)\n\nif (is.na(sample_count) || sample_count < 2) {\n    warning(\"Not enough samples for clustering rectangles; skipping cutree step for this dataset\")\n    groups <- data.frame()\n} else {\n    k_target <- min(54, max(2, sample_count - 1))\n    rect.hclust(fit, k = k_target)\n\n    groups <- cutree(fit, k = k_target)\n\n    groups <- as.data.frame(groups)\n\n    groups <- cbind(groups, metadata)\n}\n"""
+
+sheet_old = 'targets <- read.metharray.sheet(here("data"))'
+sheet_new = r'targets <- read.metharray.sheet(here("data"), pattern = "cMulligan_SampleSheet160\\.csv$")'
+
+for path_str in paths:
     path = Path(path_str)
     if not path.exists():
         continue
     text = path.read_text()
-    old = """plot(fit) # display dendogram\nrect.hclust(fit,k=54)\n\ngroups <- cutree(fit, k=54)\n\ngroups <- as.data.frame(groups)\n\ngroups <- cbind(groups, metadata)\n"""
-    if old in text:
-        new = """plot(fit) # display dendogram\nsample_count <- length(fit$order)\n\nif (is.na(sample_count) || sample_count < 2) {\n    warning(\"Not enough samples for clustering rectangles; skipping cutree step for this dataset\")\n    groups <- data.frame()\n} else {\n    k_target <- min(54, max(2, sample_count - 1))\n    rect.hclust(fit, k = k_target)\n\n    groups <- cutree(fit, k = k_target)\n\n    groups <- as.data.frame(groups)\n\n    groups <- cbind(groups, metadata)\n}\n"""
-        path.write_text(text.replace(old, new, 1))
+    updated = False
+    if cluster_old in text:
+        text = text.replace(cluster_old, cluster_new, 1)
+        updated = True
+    if sheet_old in text:
+        text = text.replace(sheet_old, sheet_new)
+        updated = True
+    if updated:
+        path.write_text(text)
 PY
 
 # Ensure IDAT symlinks are refreshed from downloads when available
@@ -332,7 +397,18 @@ fi
 
 # Configure parallel processing
 NUM_CORES=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
-echo "Configuring parallel processing with $NUM_CORES cores"
+echo "Configuring parallel processing:"
+echo "  System cores: $NUM_CORES"
+echo "  R will use: $IGP_CORES cores"
+echo ""
+echo "Analysis stage: $IGP_STAGE"
+case "$IGP_STAGE" in
+    1) echo "  (Setup & Initial QC - quick run)" ;;
+    2) echo "  (Read IDATs & Correlations - 8-12 hours)" ;;
+    3) echo "  (Replicate Analysis)" ;;
+    4) echo "  (Full QC)" ;;
+    5) echo "  (Complete Analysis)" ;;
+esac
 export MAKEFLAGS="-j${NUM_CORES}"
 export MC_CORES="${NUM_CORES}"
 

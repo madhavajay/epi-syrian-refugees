@@ -10,10 +10,39 @@ output:
       collapsed: false
       smooth_scroll: false
     code_folding: show
-editor_options: 
-  markdown: 
+editor_options:
+  markdown:
     wrap: 72
 ---
+
+```{r setup_stage_control, include=FALSE}
+# Stage-based execution control
+# Set IGP_STAGE environment variable to control execution:
+#   1 = Setup & Initial QC (up to label technical replicates)
+#   2 = Read IDATs & Correlations (up to cor table) [DEFAULT]
+#   3 = Replicate Analysis (up to use horvath age data)
+#   4 = Full QC (up to combat batch correction)
+#   5 = Complete Analysis (all chunks)
+
+IGP_STAGE <- as.integer(Sys.getenv("IGP_STAGE", "2"))
+message(paste("Running up to STAGE", IGP_STAGE))
+
+# Stage breakpoints (chunk numbers from grep output)
+STAGE_CHUNKS <- list(
+  stage1 = 640,   # "label technical replicates"
+  stage2 = 1421,  # "cor table"
+  stage3 = 1799,  # "use horvath age data"
+  stage4 = 2461,  # "combat batch correction"
+  stage5 = 9999   # All chunks
+)
+
+# Helper function to check if current chunk should run
+should_run_chunk <- function(chunk_line) {
+  if (IGP_STAGE == 5) return(TRUE)
+  max_line <- STAGE_CHUNKS[[paste0("stage", IGP_STAGE)]]
+  return(chunk_line <= max_line)
+}
+```
 
 # Load ewastools libraries
 
@@ -569,14 +598,38 @@ duplicates <- dsamp[duplicated(dsamp$sampleID) |
 
 mistakes <- dsamp[!(dsamp$sampleID %in% duplicates$sampleID),]
 
+# Debug: Check mistakes dataframe
+cat("\n=== DEBUG: Mistakes dataframe ===\n")
+cat(paste("Number of mistake samples:", nrow(mistakes), "\n"))
+cat(paste("Number of columns in mistakes:", ncol(mistakes), "\n"))
+if (nrow(mistakes) > 0) {
+    cat("Column names:", paste(colnames(mistakes), collapse=", "), "\n")
+    cat("First few rows:\n")
+    print(head(mistakes))
+} else {
+    cat("No accidental duplicate samples found\n")
+}
+cat("==================================\n\n")
+
 # Build table dynamically based on number of mistake samples
 n_mistakes <- nrow(mistakes)
 if (n_mistakes > 0) {
-    duplicated_samples <- mistakes[c(1:3,7)] %>%
+    # Safely select columns - only select column 7 if it exists
+    max_col <- ncol(mistakes)
+    if (max_col >= 7) {
+        mistake_cols <- mistakes[c(1:3,7)]
+    } else {
+        # If column 7 doesn't exist, just use columns 1:3
+        mistake_cols <- mistakes[c(1:min(3, max_col))]
+    }
+
+    duplicated_samples <- mistake_cols %>%
       kbl(caption=paste("Duplicated samples:", n_mistakes, "found")) %>%
       kable_styling("hover",full_width=F)
 
     # Apply row styling based on actual number of mistakes
+    # IMPORTANT: n_mistakes is the original row count, but we need to verify
+    # the actual row count in the rendered table
     if (n_mistakes >= 2) {
         duplicated_samples <- duplicated_samples %>%
           row_spec(1:min(2, n_mistakes), bold = T, color = "black", background = "skyblue")
@@ -649,16 +702,80 @@ check2 <- samplesheet %>%
 samplesheet <- samplesheet %>% 
   left_join(check2, by = ("Sample_Name"))
 
-toAverage <- samplesheet %>% 
-  group_by(sampleID) %>% 
-  filter(n()>1) %>% 
-  ungroup() %>% 
-  select(uid,sampleID) %>% 
+# Debug: Write to file for real-time viewing
+debug_file <- "output/toAverage_debug.txt"
+dir.create("output", showWarnings = FALSE, recursive = TRUE)
+sink(debug_file)
+cat("\n=== DEBUG: Creating toAverage for replicate analysis ===\n")
+cat(paste("Timestamp:", Sys.time(), "\n"))
+cat(paste("Total samples in samplesheet:", nrow(samplesheet), "\n"))
+
+# Check which samples have replicates
+replicate_counts <- samplesheet %>%
+  group_by(sampleID) %>%
+  summarise(n_replicates = n()) %>%
+  filter(n_replicates > 1)
+
+cat(paste("Samples with replicates (n>1):", nrow(replicate_counts), "\n"))
+if (nrow(replicate_counts) > 0) {
+  cat("Replicate sample IDs:\n")
+  print(replicate_counts)
+} else {
+  cat("⚠ WARNING: No samples with multiple replicates found!\n")
+}
+
+toAverage <- samplesheet %>%
+  group_by(sampleID) %>%
+  filter(n()>1) %>%
+  ungroup() %>%
+  select(uid,sampleID) %>%
   arrange(uid)
 
+cat(paste("\nAfter filtering, toAverage has", nrow(toAverage), "rows\n"))
+if (nrow(toAverage) > 0) {
+  cat("First few rows of toAverage dataframe:\n")
+  print(head(toAverage, 10))
+} else {
+  cat("⚠ WARNING: toAverage is empty after filtering!\n")
+}
+
+cat("\nCalling by() to group uid by sampleID...\n")
 toAverage <-by(toAverage$uid,toAverage$sampleID,print)
 
+cat(paste("After by(), toAverage class:", class(toAverage), "\n"))
+cat(paste("After by(), toAverage length:", length(toAverage), "\n"))
+if (length(toAverage) > 0) {
+  cat(paste("Names:", paste(names(toAverage), collapse=", "), "\n"))
+  cat("\nFirst element of toAverage:\n")
+  print(toAverage[[1]])
+} else {
+  cat("⚠ WARNING: toAverage has length 0 after by()!\n")
+}
+cat("=======================================================\n\n")
+sink()
 
+message("✓ toAverage debug written to ", debug_file)
+
+
+```
+
+```{r stage1_complete, include=FALSE}
+# STAGE 1 CHECKPOINT: Setup & Initial QC Complete
+if (IGP_STAGE == 1) {
+  message("\n========================================")
+  message("STAGE 1 COMPLETE: Setup & Initial QC")
+  message("========================================")
+  message("✓ Libraries loaded")
+  message("✓ Data loaded")
+  message("✓ SNP clustering done")
+  message("✓ NMDS done")
+  message("✓ Meffil QC steps 1-5 complete")
+  message("✓ Technical replicates labeled")
+  message("✓ toAverage structure created")
+  message("\nDebug output: output/toAverage_debug.txt")
+  message("========================================\n")
+  knitr::knit_exit()
+}
 ```
 
 > Get raw and preprocessed betas for all samples. Get combat betas for
@@ -667,37 +784,53 @@ toAverage <-by(toAverage$uid,toAverage$sampleID,print)
 
 ```{r readIdats_reps}
 
+cat("\n")
+cat("================================================================================\n")
+cat("CHUNK: readIdats_reps - Starting IDAT reading and preprocessing\n")
+cat("================================================================================\n")
+cat(paste("Timestamp:", Sys.time(), "\n"))
+cat(paste("Working directory:", getwd(), "\n"))
+cat(paste("Samples to process:", nrow(samplesheet), "\n"))
+cat("\n")
+
 # Ensure ALL required sesame data is cached (required for IDAT reading)
-cat("Checking sesame reference data cache...\n")
+cat("[STEP 1/10] Checking sesame reference data cache...\n")
 options(timeout = 600)  # Increase timeout for slow connections
 
 # Show ExperimentHub cache location
 eh_cache <- rappdirs::user_cache_dir("ExperimentHub")
-cat(paste("ExperimentHub cache directory:", eh_cache, "\n"))
+cat(paste("  ExperimentHub cache directory:", eh_cache, "\n"))
 
 # Try caching ALL sesame data (most reliable approach despite being slower)
-cat("Attempting to cache all sesame data (may take several minutes)...\n")
+cat("\n[STEP 2/10] Attempting to cache all sesame data (may take several minutes)...\n")
+cat("  This will download reference files from ExperimentHub\n")
+cat("  If this hangs, it's likely a network/ExperimentHub server issue\n\n")
+
+cache_start <- Sys.time()
 tryCatch({
   sesameDataCache()
-  cat("✓ All sesame data cached successfully\n")
+  cache_elapsed <- as.numeric(difftime(Sys.time(), cache_start, units = "secs"))
+  cat(paste("  ✓ All sesame data cached successfully in", round(cache_elapsed, 1), "seconds\n"))
 }, error = function(e) {
-  cat(paste("Warning: Bulk cache failed:", e$message, "\n"))
-  cat("Falling back to individual file caching...\n")
+  cat(paste("  ✗ Bulk cache failed:", e$message, "\n"))
+  cat("\n[STEP 2b/10] Falling back to individual file caching...\n")
 
   # Fallback: cache specific files
   required_files <- c('EPIC.address', 'idatSignature', 'KYCG.EPIC.Mask.20220123')
   for (file in required_files) {
     tryCatch({
-      cat(paste("  Caching", file, "...\n"))
+      cat(paste("    Caching", file, "... "))
+      file_start <- Sys.time()
       sesameDataCache(file)
-      cat(paste("  ✓", file, "\n"))
+      file_elapsed <- as.numeric(difftime(Sys.time(), file_start, units = "secs"))
+      cat(paste("✓ (", round(file_elapsed, 1), "s)\n", sep = ""))
     }, error = function(e2) {
-      cat(paste("  ✗ FAILED:", file, "-", e2$message, "\n"))
+      cat(paste("✗ FAILED -", e2$message, "\n"))
     })
   }
 })
 
-cat("Sesame cache setup complete\n")
+cat("\n[STEP 3/10] Sesame cache setup complete\n\n")
 
 # Get raw betas first
 
@@ -707,19 +840,20 @@ if (file.exists(here("output","raw_betas.rds"))){
 
 } else {
 
-  # Write to debug file to track execution
+  cat("[STEP 5/10] Preparing to read IDAT files...\n")
   writeLines(paste("ENTERING IDAT READ BLOCK AT", Sys.time()), here("output", "debug_trace.txt"))
 
   # Set locale for multibyte string handling
+  cat("  Setting locale to C for multibyte string handling... ")
   Sys.setlocale("LC_ALL", "C")
+  cat("✓\n")
 
   # Debug: Check sample paths
-  cat("\n=== IDAT Reading Debug Info ===\n")
-  flush.console()
-  cat(paste("Total samples:", nrow(samplesheet), "\n"))
-  cat(paste("First 3 basenames:\n"))
+  cat("\n  Sample information:\n")
+  cat(paste("    Total samples:", nrow(samplesheet), "\n"))
+  cat("    First 3 basenames:\n")
   for (i in 1:min(3, nrow(samplesheet))) {
-    cat(paste("  [", i, "]", samplesheet$Basename[i], "\n"))
+    cat(paste("      [", i, "]", samplesheet$Basename[i], "\n"))
   }
 
   # Check if files exist
@@ -729,12 +863,14 @@ if (file.exists(here("output","raw_betas.rds"))){
   grn_gz <- paste0(grn_file, ".gz")
   red_gz <- paste0(red_file, ".gz")
 
-  cat(paste("\nChecking first sample:", first_sample, "\n"))
-  cat(paste("  Grn exists:", file.exists(grn_file), "| Grn.gz exists:", file.exists(grn_gz), "\n"))
-  cat(paste("  Red exists:", file.exists(red_file), "| Red.gz exists:", file.exists(red_gz), "\n"))
+  cat(paste("\n  File existence check for first sample:\n"))
+  cat(paste("    ", basename(first_sample), "\n"))
+  cat(paste("      Grn:", file.exists(grn_file), "| Grn.gz:", file.exists(grn_gz), "\n"))
+  cat(paste("      Red:", file.exists(red_file), "| Red.gz:", file.exists(red_gz), "\n"))
 
   # Try to read first sample as a test
-  cat("\nAttempting test read of first sample...\n")
+  cat("\n[STEP 6/10] Running test read on first sample...\n")
+  cat("  This validates sesame can read the IDAT files\n")
   test_result <- tryCatch({
     test_idat <- readIDATpair(first_sample)
     cat(paste("✓ readIDATpair succeeded\n"))
@@ -761,19 +897,27 @@ if (file.exists(here("output","raw_betas.rds"))){
 
   cat("==============================\n\n")
 
-  # Use fewer cores to avoid overwhelming system
-  n_cores <- min(16, parallel::detectCores() - 1)
+  cat("\n[STEP 7/10] Setting up parallel processing for raw betas...\n")
+  # Use IGP_CORES from environment, or auto-detect with sensible max
+  igp_cores <- as.integer(Sys.getenv("IGP_CORES", "8"))
+  n_cores <- min(igp_cores, parallel::detectCores() - 1, 16)
+  cat(paste("  Creating cluster with", n_cores, "workers (IGP_CORES=", igp_cores, ")... ", sep=""))
   cl <- makeCluster(n_cores)
   registerDoParallel(cl)
+  cat("✓\n")
 
   # Load required packages in each worker - THIS IS CRITICAL!
-  cat("Loading packages in parallel workers...\n")
+  cat("  Loading packages in each worker (sesame, here)... ")
   clusterEvalQ(cl, {
     library(sesame)
     library(here)
     Sys.setlocale("LC_ALL", "C")
   })
-  cat("✓ Packages loaded in workers\n")
+  cat("✓\n")
+
+  cat(paste("\n  Starting parallel IDAT reading for", nrow(samplesheet), "samples...\n"))
+  cat("  This may take 10-30 minutes depending on system\n")
+  read_start <- Sys.time()
 
   rawBetas_list <- parLapply(cl,samplesheet$Basename, function(pfx) {
     tryCatch({
@@ -791,12 +935,19 @@ if (file.exists(here("output","raw_betas.rds"))){
     })
     })
 
+  read_elapsed <- as.numeric(difftime(Sys.time(), read_start, units = "mins"))
+  cat(paste("\n  Parallel reading completed in", round(read_elapsed, 1), "minutes\n"))
+
+  cat("  Stopping cluster... ")
   stopCluster(cl)
+  cat("✓\n\n")
 
   # Separate successful reads from errors
+  cat("  Analyzing results...\n")
   is_error <- sapply(rawBetas_list, function(x) is.list(x) && !is.null(x$error))
   errors <- rawBetas_list[is_error]
   successful_reads <- rawBetas_list[!is_error]
+  cat(paste("    Successful:", length(successful_reads), "| Failed:", length(errors), "\n"))
 
   # Report errors if any
   if (length(errors) > 0) {
@@ -832,36 +983,51 @@ if (file.exists(here("output","raw_betas.rds"))){
     stop("All raw IDAT reads failed. Check output/debug_trace.txt for details.")
   }
 
-  cat(paste("\n✓ Successfully read", length(successful_reads), "of", nrow(samplesheet), "samples\n\n"))
+  cat(paste("\n✓ Successfully read", length(successful_reads), "of", nrow(samplesheet), "samples\n"))
 
+  cat("  Combining results into matrix... ")
   rawBetas <- do.call(cbind, successful_reads)
+  cat(paste("✓ (", nrow(rawBetas), "probes ×", ncol(rawBetas), "samples)\n"))
 
+  cat("  Saving to output/raw_betas.rds... ")
   saveRDS(rawBetas, file = here("output","raw_betas.rds"))
+  cat("✓\n\n")
 
 }
 
 
 # Next get SeSame betas
+cat("[STEP 8/10] Processing preprocessed betas (with noob, pOOBAH, etc.)...\n")
 
 if (file.exists(here("output","preprocessed_betas.rds"))){
-
+  cat("  ✓ Found cached preprocessed_betas.rds - loading from disk\n")
   ppBetas <- readRDS(here("output","preprocessed_betas.rds"))
+  cat(paste("  Loaded", ncol(ppBetas), "samples,", nrow(ppBetas), "probes\n\n"))
 
 } else {
+  cat("  No cache found - will preprocess IDATs from scratch\n")
+  cat("  This applies: dyeBiasNL → inferInfiniumIChannel → pOOBAH → noob\n\n")
 
-  # Use fewer cores to avoid overwhelming system
-  n_cores <- min(16, parallel::detectCores() - 1)
+  # Use IGP_CORES from environment, or auto-detect with sensible max
+  igp_cores <- as.integer(Sys.getenv("IGP_CORES", "8"))
+  n_cores <- min(igp_cores, parallel::detectCores() - 1, 16)
+  cat(paste("  Creating cluster with", n_cores, "workers (IGP_CORES=", igp_cores, ")... ", sep=""))
   cl <- makeCluster(n_cores)
   registerDoParallel(cl)
+  cat("✓\n")
 
   # Load required packages in each worker
-  cat("Loading packages in parallel workers for preprocessing...\n")
+  cat("  Loading packages in each worker (sesame, here)... ")
   clusterEvalQ(cl, {
     library(sesame)
     library(here)
     Sys.setlocale("LC_ALL", "C")
   })
-  cat("✓ Packages loaded in workers\n")
+  cat("✓\n")
+
+  cat(paste("\n  Starting parallel preprocessing for", nrow(samplesheet), "samples...\n"))
+  cat("  This will take longer than raw reads (30-60 minutes)\n")
+  preprocess_start <- Sys.time()
 
   ppBetas_list <- parLapply(cl,samplesheet$Basename, function(pfx) {
     tryCatch({
@@ -878,12 +1044,19 @@ if (file.exists(here("output","preprocessed_betas.rds"))){
     })
     })
 
+  preprocess_elapsed <- as.numeric(difftime(Sys.time(), preprocess_start, units = "mins"))
+  cat(paste("\n  Parallel preprocessing completed in", round(preprocess_elapsed, 1), "minutes\n"))
+
+  cat("  Stopping cluster... ")
   stopCluster(cl)
+  cat("✓\n\n")
 
   # Separate successful reads from errors
+  cat("  Analyzing results...\n")
   is_error <- sapply(ppBetas_list, function(x) is.list(x) && !is.null(x$error))
   errors <- ppBetas_list[is_error]
   successful_reads <- ppBetas_list[!is_error]
+  cat(paste("    Successful:", length(successful_reads), "| Failed:", length(errors), "\n"))
 
   if (length(errors) > 0) {
     err_msg <- paste("\n=== Preprocessed IDAT Read Errors (", length(errors), "samples failed) ===\n")
@@ -910,76 +1083,114 @@ if (file.exists(here("output","preprocessed_betas.rds"))){
     stop("All preprocessed IDAT reads failed. Check output/debug_trace.txt for details.")
   }
 
-  message(paste("Successfully preprocessed", length(successful_reads), "of", nrow(samplesheet), "samples"))
+  cat(paste("\n✓ Successfully preprocessed", length(successful_reads), "of", nrow(samplesheet), "samples\n"))
 
+  cat("  Combining results into matrix... ")
   ppBetas <- do.call(cbind, successful_reads)
+  cat(paste("✓ (", nrow(ppBetas), "probes ×", ncol(ppBetas), "samples)\n"))
 
+  cat("  Saving to output/preprocessed_betas.rds... ")
   saveRDS(ppBetas, file = here("output","preprocessed_betas.rds"))
+  cat("✓\n\n")
 
 }
 
 
-
+cat("[STEP 9/10] Preparing data for replicate analysis...\n")
 # Now get combat betas just for replicates
 
+cat("  Converting to data frames and setting column names... ")
 rawBetas <- as.data.frame(rawBetas)
 colnames(rawBetas) <- samplesheet$uid
 
 ppBetas <- as.data.frame(ppBetas)
 colnames(ppBetas) <- samplesheet$uid
+cat("✓\n")
 
 # subset betas for replicates
+cat("  Subsetting replicate samples... ")
 rep_raw <- rawBetas[colnames(rawBetas) %in% samplesheet[samplesheet$replicate==TRUE,"uid"]]
 rep_sesame <- ppBetas[colnames(ppBetas) %in% samplesheet[samplesheet$replicate==TRUE,"uid"]]
+cat(paste("✓ (", ncol(rep_raw), "replicates)\n\n"))
 
 
+cat("[STEP 10/10] Running ComBat batch correction on replicates...\n")
 if (file.exists(here("output","rep_combat.rds"))){
-  
+  cat("  ✓ Found cached rep_combat.rds - loading from disk\n")
   rep_combat <- readRDS(here("output","rep_combat.rds"))
+  cat(paste("  Loaded", ncol(rep_combat), "samples\n\n"))
 } else {
+  cat("  No cache found - running ComBat from scratch\n")
 
-# prepare sesame preprocess replicate betas for ComBat.
-
-rep_combat <- ppBetas[colnames(ppBetas) %in% samplesheet[samplesheet$replicate==TRUE,"uid"]]
+  # prepare sesame preprocess replicate betas for ComBat.
+  cat("  Preparing data for ComBat... ")
+  rep_combat <- ppBetas[colnames(ppBetas) %in% samplesheet[samplesheet$replicate==TRUE,"uid"]]
 
 # ComBat will not run on probes where everyone is NA. Eliminate
-# those probes.
+  # those probes.
+  rep_combat <- rep_combat %>%
+    filter(rowSums(is.na(.)) < 5)
+  cat("✓\n")
 
-rep_combat <- rep_combat %>% 
-  filter(rowSums(is.na(.)) < 5)
+  cat("  Preparing batch information... ")
+  od <- samplesheet[samplesheet$replicate==TRUE,]
+  linker1 <- match(od$uid,colnames(rep_combat))
+  batch <- od[linker1, ]
+  cat("✓\n")
 
-od <- samplesheet[samplesheet$replicate==TRUE,]
+  # Check if we have multiple batches for ComBat
+  n_batches <- length(unique(batch$Plate))
+  cat(paste("  Detected", n_batches, "unique batch(es) in replicate samples\n"))
 
-linker1 <- match(od$uid,colnames(rep_combat))
+  if (n_batches < 2) {
+    cat("  ⚠ Warning: Only 1 batch found - skipping ComBat (requires ≥2 batches)\n")
+    cat("  Using preprocessed betas without batch correction\n")
+    # rep_combat already contains the preprocessed data, no need to modify
+  } else {
+    # Convert betas to m values prior to combat
+    cat("  Converting beta values to M values... ")
+    mvals <- as.matrix(BetaValueToMValue(rep_combat))
+    modcombat <- model.matrix(~1,data=batch)
+    cat("✓\n")
 
-batch <- od[linker1, ]
+    # Run ComBat with a parametric Bayesian framework
+    cat(paste("  Running ComBat batch correction across", n_batches, "batches (this may take a few minutes)...\n"))
+    combat_start <- Sys.time()
+    mvals <- ComBat(
+      dat = mvals,
+      batch = batch$Plate,
+      mod = modcombat,
+      par.prior = TRUE,
+      prior.plots = FALSE,
+      mean.only = FALSE,
+      ref.batch = NULL)
+    combat_elapsed <- as.numeric(difftime(Sys.time(), combat_start, units = "secs"))
+    cat(paste("  ✓ ComBat completed in", round(combat_elapsed, 1), "seconds\n"))
 
-# Convert betas to m values prior to combat
-mvals <- as.matrix(BetaValueToMValue(rep_combat))
-# make model matrix
-modcombat <- model.matrix(~1,data=batch)
+    # convert mvals object into a data frame of beta values
+    cat("  Converting M values back to beta values... ")
+    rep_combat <- as.data.frame(MValueToBetaValue(mvals))
+    cat("✓\n")
 
-# identical(batch$Sample_Name,colnames(rep_combat)) # TRUE
+    rm(mvals)
+  }
 
-# Run ComBat with a parametric Bayesian framework
-mvals <- ComBat(
-dat = mvals,
-batch = batch$Plate,
-mod = modcombat,
-par.prior = TRUE, # runs a parametric framework
-prior.plots = FALSE, # outputs prior plots
-mean.only = FALSE,
-ref.batch = NULL)
-
-# convert mvals object into a data frame of beta values
-
-rep_combat <- as.data.frame(MValueToBetaValue(mvals))
-
-saveRDS(rep_combat, file = here("output","rep_combat.rds"))
-
-rm(mvals)
+  cat("  Saving to output/rep_combat.rds... ")
+  saveRDS(rep_combat, file = here("output","rep_combat.rds"))
+  cat("✓\n")
 
 }
+
+cat("\n")
+cat("================================================================================\n")
+cat("CHUNK COMPLETE: readIdats_reps\n")
+cat("================================================================================\n")
+cat(paste("Completion timestamp:", Sys.time(), "\n"))
+cat(paste("Raw betas:", ncol(rawBetas), "samples ×", nrow(rawBetas), "probes\n"))
+cat(paste("Preprocessed betas:", ncol(ppBetas), "samples ×", nrow(ppBetas), "probes\n"))
+cat(paste("Replicate combat betas:", ncol(rep_combat), "samples\n"))
+cat("================================================================================\n")
+cat("\n")
 
 ```
 
@@ -1042,45 +1253,92 @@ corstars <-function(x, method=c("pearson", "spearman"), removeTriangle=c("upper"
 
 ```{r correlation matrices}
 
-# Raw replicate correlations
-raw_rep1 <- rep_raw %>% 
-  select(toAverage$`1-11-F3-2-F`) %>% 
-  corstars(method = "spearman")
+# Debug: Check what's in toAverage - write to file
+debug_cor_file <- "output/correlation_debug.txt"
+dir.create("output", showWarnings = FALSE, recursive = TRUE)
+sink(debug_cor_file, append=TRUE)
+cat("\n=== DEBUG: toAverage structure for correlations ===\n")
+cat(paste("Timestamp:", Sys.time(), "\n"))
+cat(paste("Class:", class(toAverage), "\n"))
+cat(paste("Length:", length(toAverage), "\n"))
+cat(paste("Is list:", is.list(toAverage), "\n"))
+cat(paste("Names:", paste(names(toAverage), collapse=", "), "\n"))
+cat("\nFirst few elements:\n")
+print(head(toAverage, 3))
+cat("===================================\n\n")
+sink()
 
-raw_rep2 <- rep_raw %>% 
-  select(toAverage$`1-13-F3-2-M`) %>% 
-  corstars(method = "spearman")
+message("✓ toAverage structure debug written to ", debug_cor_file)
+
+# Check if we have replicate data to correlate
+if (length(toAverage) == 0 || !is.list(toAverage)) {
+  cat("⚠ Warning: No replicate samples found or toAverage is not properly structured\n")
+  cat("Skipping correlation matrix analysis\n")
+  # Create empty placeholder objects so downstream code doesn't break
+  raw_reps <- numeric(0)
+  sesame_reps <- numeric(0)
+  combat_reps <- numeric(0)
+} else {
+  cat(paste("Calculating correlations for", length(toAverage), "replicate groups\n"))
+
+  # Check if expected replicate names exist
+  expected_names <- c("1-11-F3-2-F", "1-13-F3-2-M", "2-6-F3-1-F", "2-10-F2-F",
+                      "2-10-F3-2-F", "3-5-F3-2-F", "3-6-F3-1-M", "3-15-F3-1-F",
+                      "3-21-F2-F", "3-24-F3-1-F")
+  available_names <- names(toAverage)
+  missing_names <- setdiff(expected_names, available_names)
+
+  if (length(missing_names) > 0) {
+    cat("⚠ WARNING: Expected replicate groups not found in toAverage:\n")
+    cat(paste("  Missing:", paste(missing_names, collapse=", "), "\n"))
+    cat(paste("  Available:", paste(available_names, collapse=", "), "\n\n"))
+  }
+
+# Raw replicate correlations with error handling
+cat("Calculating raw correlations...\n")
+
+raw_rep1 <- tryCatch({
+  cols <- toAverage$`1-11-F3-2-F`
+  cat(paste("  rep1: selecting", length(cols), "columns\n"))
+  rep_raw %>% select(all_of(cols)) %>% corstars(method = "spearman")
+}, error = function(e) { cat(paste("  rep1 FAILED:", e$message, "\n")); NULL })
+
+raw_rep2 <- tryCatch({
+  cols <- toAverage$`1-13-F3-2-M`
+  cat(paste("  rep2: selecting", length(cols), "columns\n"))
+  rep_raw %>% select(all_of(cols)) %>% corstars(method = "spearman")
+}, error = function(e) { cat(paste("  rep2 FAILED:", e$message, "\n")); NULL })
 
 raw_rep3 <- rep_raw %>% 
-  select(toAverage$`2-6-F3-1-F`) %>% 
+  select(all_of(toAverage$`2-6-F3-1-F`)) %>% 
   corstars(method = "spearman")
 
 raw_rep4 <- rep_raw %>% 
-  select(toAverage$`2-10-F2-F`) %>% 
+  select(all_of(toAverage$`2-10-F2-F`)) %>% 
   corstars(method = "spearman")
 
 raw_rep5 <- rep_raw %>% 
-  select(toAverage$`2-10-F3-2-F`) %>% 
+  select(all_of(toAverage$`2-10-F3-2-F`)) %>% 
   corstars(method = "spearman")
 
 raw_rep6 <- rep_raw %>% 
-  select(toAverage$`3-5-F3-2-F`) %>% 
+  select(all_of(toAverage$`3-5-F3-2-F`)) %>% 
   corstars(method = "spearman")
 
 raw_rep7 <- rep_raw %>% 
-  select(toAverage$`3-6-F3-1-M`) %>% 
+  select(all_of(toAverage$`3-6-F3-1-M`)) %>% 
   corstars(method = "spearman")
 
 raw_rep8 <- rep_raw %>% 
-  select(toAverage$`3-15-F3-1-F`) %>% 
+  select(all_of(toAverage$`3-15-F3-1-F`)) %>% 
   corstars(method = "spearman")
 
 raw_rep9 <- rep_raw %>% 
-  select(toAverage$`3-21-F2-F`) %>% 
+  select(all_of(toAverage$`3-21-F2-F`)) %>% 
   corstars(method = "spearman")
 
 raw_rep10 <- rep_raw %>% 
-  select(toAverage$`3-24-F3-1-F`) %>% 
+  select(all_of(toAverage$`3-24-F3-1-F`)) %>% 
   corstars(method = "spearman")
 
 raw_reps <- as.numeric(c(raw_rep1$`1-11-F3-2-F_1`[2],
@@ -1098,43 +1356,43 @@ raw_reps <- as.numeric(c(raw_rep1$`1-11-F3-2-F_1`[2],
 
 # SeSame replicate correlations
 sesame_rep1 <- rep_sesame %>% 
-  select(toAverage$`1-11-F3-2-F`) %>% 
+  select(all_of(toAverage$`1-11-F3-2-F`)) %>% 
   corstars(method = "spearman")
 
 sesame_rep2 <- rep_sesame %>% 
-  select(toAverage$`1-13-F3-2-M`) %>% 
+  select(all_of(toAverage$`1-13-F3-2-M`)) %>% 
   corstars(method = "spearman")
 
 sesame_rep3 <- rep_sesame %>% 
-  select(toAverage$`2-6-F3-1-F`) %>% 
+  select(all_of(toAverage$`2-6-F3-1-F`)) %>% 
   corstars(method = "spearman")
 
 sesame_rep4 <- rep_sesame %>% 
-  select(toAverage$`2-10-F2-F`) %>% 
+  select(all_of(toAverage$`2-10-F2-F`)) %>% 
   corstars(method = "spearman")
 
 sesame_rep5 <- rep_sesame %>% 
-  select(toAverage$`2-10-F3-2-F`) %>% 
+  select(all_of(toAverage$`2-10-F3-2-F`)) %>% 
   corstars(method = "spearman")
 
 sesame_rep6 <- rep_sesame %>% 
-  select(toAverage$`3-5-F3-2-F`) %>% 
+  select(all_of(toAverage$`3-5-F3-2-F`)) %>% 
   corstars(method = "spearman")
 
 sesame_rep7 <- rep_sesame %>% 
-  select(toAverage$`3-6-F3-1-M`) %>% 
+  select(all_of(toAverage$`3-6-F3-1-M`)) %>% 
   corstars(method = "spearman")
 
 sesame_rep8 <- rep_sesame %>% 
-  select(toAverage$`3-15-F3-1-F`) %>% 
+  select(all_of(toAverage$`3-15-F3-1-F`)) %>% 
   corstars(method = "spearman")
 
 sesame_rep9 <- rep_sesame %>% 
-  select(toAverage$`3-21-F2-F`) %>% 
+  select(all_of(toAverage$`3-21-F2-F`)) %>% 
   corstars(method = "spearman")
 
 sesame_rep10 <- rep_sesame %>% 
-  select(toAverage$`3-24-F3-1-F`) %>% 
+  select(all_of(toAverage$`3-24-F3-1-F`)) %>% 
   corstars(method = "spearman")
 
 sesame_reps <- as.numeric(c(sesame_rep1$`1-11-F3-2-F_1`[2],
@@ -1154,43 +1412,43 @@ sesame_reps <- as.numeric(c(sesame_rep1$`1-11-F3-2-F_1`[2],
 
 # ComBat replicate correlations
 combat_rep1 <- rep_combat %>% 
-  select(toAverage$`1-11-F3-2-F`) %>% 
+  select(all_of(toAverage$`1-11-F3-2-F`)) %>% 
   corstars(method = "spearman")
 
 combat_rep2 <- rep_combat %>% 
-  select(toAverage$`1-13-F3-2-M`) %>% 
+  select(all_of(toAverage$`1-13-F3-2-M`)) %>% 
   corstars(method = "spearman")
 
 combat_rep3 <- rep_combat %>% 
-  select(toAverage$`2-6-F3-1-F`) %>% 
+  select(all_of(toAverage$`2-6-F3-1-F`)) %>% 
   corstars(method = "spearman")
 
 combat_rep4 <- rep_combat %>% 
-  select(toAverage$`2-10-F2-F`) %>% 
+  select(all_of(toAverage$`2-10-F2-F`)) %>% 
   corstars(method = "spearman")
 
 combat_rep5 <- rep_combat %>% 
-  select(toAverage$`2-10-F3-2-F`) %>% 
+  select(all_of(toAverage$`2-10-F3-2-F`)) %>% 
   corstars(method = "spearman")
 
 combat_rep6 <- rep_combat %>% 
-  select(toAverage$`3-5-F3-2-F`) %>% 
+  select(all_of(toAverage$`3-5-F3-2-F`)) %>% 
   corstars(method = "spearman")
 
 combat_rep7 <- rep_combat %>% 
-  select(toAverage$`3-6-F3-1-M`) %>% 
+  select(all_of(toAverage$`3-6-F3-1-M`)) %>% 
   corstars(method = "spearman")
 
 combat_rep8 <- rep_combat %>% 
-  select(toAverage$`3-15-F3-1-F`) %>% 
+  select(all_of(toAverage$`3-15-F3-1-F`)) %>% 
   corstars(method = "spearman")
 
 combat_rep9 <- rep_combat %>% 
-  select(toAverage$`3-21-F2-F`) %>% 
+  select(all_of(toAverage$`3-21-F2-F`)) %>% 
   corstars(method = "spearman")
 
 combat_rep10 <- rep_combat %>% 
-  select(toAverage$`3-24-F3-1-F`) %>% 
+  select(all_of(toAverage$`3-24-F3-1-F`)) %>% 
   corstars(method = "spearman")
 
 combat_reps <- as.numeric(c(combat_rep1$`1-11-F3-2-F_1`[2],
@@ -1204,6 +1462,7 @@ combat_reps <- as.numeric(c(combat_rep1$`1-11-F3-2-F_1`[2],
               combat_rep9$`3-21-F2-F_1`[2],
               combat_rep10$`3-24-F3-1-F_1`[2]))
 
+}  # End of replicate correlation analysis
 
 ```
 
@@ -1211,39 +1470,81 @@ combat_reps <- as.numeric(c(combat_rep1$`1-11-F3-2-F_1`[2],
 
 ```{r cor table}
 
-# Values taken from the three correlation matrices above.
+# Check if we have correlation data to display
+if (length(raw_reps) == 0) {
+  cat("⚠ No correlation data available (skipped due to missing replicates)\n")
+  cat("Displaying placeholder table\n")
 
-scor <- data.frame(replicate = c("1-11-F3-2-F",
-                                 "1-13-F3-2-M",
-                                 "2-6-F3-1-F",
-                                 "2-10-F2-F",
-                                 "2-10-F3-2-F",
-                                 "3-5-F3-2-F",
-                                 "3-6-F3-1-M",
-                                 "3-15-F3-1-F",
-                                 "3-21-F2-F",
-                                 "3-24-F3-1-F"),
-                   raw_betas = raw_reps,
-                   SeSame_betas = sesame_reps,
-                   ComBat_betas = combat_reps)
+  # Create placeholder data frame
+  scor <- data.frame(
+    replicate = "No replicates available",
+    raw_betas = NA,
+    SeSame_betas = NA,
+    ComBat_betas = NA
+  )
 
-# Add a row at the bottom to get averages
-getmean <- apply(scor[2:4],2,mean)
-bottom_row <- c("average",getmean)
+  scor %>%
+    kbl(escape = F,
+        caption="Spearman Correlations for Technical Replicates (No Data Available)") %>%
+    kable_styling("hover", full_width = F)
 
-scor <- rbind(scor,bottom_row)
+} else {
+  # Values taken from the three correlation matrices above.
 
-scor %>%
-  kbl(escape = F, 
-      caption="Spearman Correlations for Technical Replicates with Raw, SeSame, and ComBat betas") %>% 
-  kable_styling("hover", full_width = F) %>% 
-  column_spec(1, bold = T) %>%
-  column_spec(2, bold = T, background = "lightgreen", color = "black") %>% 
-  column_spec(3, bold = T, background = "salmon", color = "black") %>% 
-  column_spec(4, bold = T, background = "skyblue", color = "black")
- 
+  scor <- data.frame(replicate = c("1-11-F3-2-F",
+                                   "1-13-F3-2-M",
+                                   "2-6-F3-1-F",
+                                   "2-10-F2-F",
+                                   "2-10-F3-2-F",
+                                   "3-5-F3-2-F",
+                                   "3-6-F3-1-M",
+                                   "3-15-F3-1-F",
+                                   "3-21-F2-F",
+                                   "3-24-F3-1-F"),
+                     raw_betas = raw_reps,
+                     SeSame_betas = sesame_reps,
+                     ComBat_betas = combat_reps)
+
+  # Add a row at the bottom to get averages
+  getmean <- apply(scor[2:4],2,mean)
+  bottom_row <- c("average",getmean)
+
+  scor <- rbind(scor,bottom_row)
+
+  scor %>%
+    kbl(escape = F,
+        caption="Spearman Correlations for Technical Replicates with Raw, SeSame, and ComBat betas") %>%
+    kable_styling("hover", full_width = F) %>%
+    column_spec(1, bold = T) %>%
+    column_spec(2, bold = T, background = "lightgreen", color = "black") %>%
+    column_spec(3, bold = T, background = "salmon", color = "black") %>%
+    column_spec(4, bold = T, background = "skyblue", color = "black")
+}
 
 
+```
+
+```{r stage2_complete, include=FALSE}
+# STAGE 2 CHECKPOINT: Read IDATs & Correlations Complete
+if (IGP_STAGE == 2) {
+  message("\n========================================")
+  message("STAGE 2 COMPLETE: Read IDATs & Correlations")
+  message("========================================")
+  message("✓ All chunks from Stage 1")
+  message("✓ IDAT files read (raw betas)")
+  message("✓ Preprocessed betas computed")
+  message("✓ ComBat batch correction applied")
+  message("✓ Correlation matrices calculated")
+  message("✓ Correlation table generated")
+  message("\nDebug outputs:")
+  message("  - output/toAverage_debug.txt")
+  message("  - output/correlation_debug.txt")
+  message("  - output/raw_betas.rds")
+  message("  - output/preprocessed_betas.rds")
+  message("  - output/rep_combat.rds")
+  message("========================================\n")
+  knitr::knit_exit()
+}
 ```
 
 ## ├ PCA biplots
@@ -1480,8 +1781,11 @@ if (file.exists(here("output","noob_betas.rds"))){
   noobBetas <- readRDS(here("output","noob_betas.rds"))
   
 } else {
-  
-  cl <- makeCluster(16)
+
+  # Use IGP_CORES from environment, or auto-detect with sensible max
+  igp_cores <- as.integer(Sys.getenv("IGP_CORES", "8"))
+  n_cores <- min(igp_cores, parallel::detectCores() - 1, 16)
+  cl <- makeCluster(n_cores)
   registerDoParallel(cl)
   clusterExport(cl, c("readIDATpair","noob","getBetas"))
   
@@ -1629,7 +1933,7 @@ if (file.exists(here("output","zeroIntensityProbes.rds"))){
 
 
 # Generate targets object
-targets <- read.metharray.sheet(here("data"))
+targets <- read.metharray.sheet(here("data"), pattern = "cMulligan_SampleSheet160\\.csv$")
 
 
 # get an "RGChannelSetExtended" object. They parallelize this
@@ -1753,7 +2057,7 @@ if (file.exists(here("output","igp_rgset_20211105.rds"))) {
   
 } else {
 
-targets <- read.metharray.sheet(here("data"))
+targets <- read.metharray.sheet(here("data"), pattern = "cMulligan_SampleSheet160\\.csv$")
 RGset <- read.metharray.exp(targets = targets)
 saveRDS(RGset, file = here("output","igp_rgset_20211105.rds"))
 
@@ -3698,8 +4002,11 @@ if(file.exists(here("data", "igp_raw_GEO.rds"))) {
 raw_igp_GEO <- readRDS(file = here("data", "igp_raw_GEO.rds"))
 
 } else {
- 
- cl <- makeCluster(8)
+
+ # Use IGP_CORES from environment, or auto-detect with sensible max
+ igp_cores <- as.integer(Sys.getenv("IGP_CORES", "8"))
+ n_cores <- min(igp_cores, parallel::detectCores() - 1, 16)
+ cl <- makeCluster(n_cores)
  registerDoParallel(cl)
  clusterExport(cl, c("readIDATpair"))
 
@@ -3750,7 +4057,10 @@ pvals <- readRDS(file = here("data", "igp_raw_pvals_GEO.rds"))
 } else {
 
 # How to get the detection p-values
-cl <- makeCluster(8)
+# Use IGP_CORES from environment, or auto-detect with sensible max
+igp_cores <- as.integer(Sys.getenv("IGP_CORES", "8"))
+n_cores <- min(igp_cores, parallel::detectCores() - 1, 16)
+cl <- makeCluster(n_cores)
  registerDoParallel(cl)
  clusterExport(cl, c("pOOBAH"))
 
