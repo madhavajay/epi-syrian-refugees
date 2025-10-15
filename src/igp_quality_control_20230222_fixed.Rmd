@@ -834,6 +834,18 @@ cat("\n[STEP 3/10] Sesame cache setup complete\n\n")
 
 # Get raw betas first
 
+# Limit nested threading before any heavy processing so cached paths benefit too
+Sys.setenv(
+  RCPP_PARALLEL_NUM_THREADS = "1",
+  OMP_NUM_THREADS = "1",
+  OMP_THREAD_LIMIT = "1",
+  MKL_NUM_THREADS = "1",
+  OPENBLAS_NUM_THREADS = "1"
+)
+if (requireNamespace("RcppParallel", quietly = TRUE)) {
+  RcppParallel::setThreadOptions(numThreads = 1)
+}
+
 if (file.exists(here("output","raw_betas.rds"))){
 
   rawBetas <- readRDS(here("output","raw_betas.rds"))
@@ -912,6 +924,16 @@ if (file.exists(here("output","raw_betas.rds"))){
     library(sesame)
     library(here)
     Sys.setlocale("LC_ALL", "C")
+    Sys.setenv(
+      RCPP_PARALLEL_NUM_THREADS = "1",
+      OMP_NUM_THREADS = "1",
+      OMP_THREAD_LIMIT = "1",
+      MKL_NUM_THREADS = "1",
+      OPENBLAS_NUM_THREADS = "1"
+    )
+    if (requireNamespace("RcppParallel", quietly = TRUE)) {
+      RcppParallel::setThreadOptions(numThreads = 1)
+    }
   })
   cat("✓\n")
 
@@ -999,6 +1021,15 @@ if (file.exists(here("output","raw_betas.rds"))){
 # Next get SeSame betas
 cat("[STEP 8/10] Processing preprocessed betas (with noob, pOOBAH, etc.)...\n")
 
+# Ensure nested threading stays at 1 even when raw betas were cached earlier
+Sys.setenv(
+  RCPP_PARALLEL_NUM_THREADS = "1",
+  OMP_NUM_THREADS = "1",
+  OMP_THREAD_LIMIT = "1",
+  MKL_NUM_THREADS = "1",
+  OPENBLAS_NUM_THREADS = "1"
+)
+
 if (file.exists(here("output","preprocessed_betas.rds"))){
   cat("  ✓ Found cached preprocessed_betas.rds - loading from disk\n")
   ppBetas <- readRDS(here("output","preprocessed_betas.rds"))
@@ -1022,6 +1053,16 @@ if (file.exists(here("output","preprocessed_betas.rds"))){
     library(sesame)
     library(here)
     Sys.setlocale("LC_ALL", "C")
+    Sys.setenv(
+      RCPP_PARALLEL_NUM_THREADS = "1",
+      OMP_NUM_THREADS = "1",
+      OMP_THREAD_LIMIT = "1",
+      MKL_NUM_THREADS = "1",
+      OPENBLAS_NUM_THREADS = "1"
+    )
+    if (requireNamespace("RcppParallel", quietly = TRUE)) {
+      RcppParallel::setThreadOptions(numThreads = 1)
+    }
   })
   cat("✓\n")
 
@@ -4369,4 +4410,3 @@ df$description <- c("unique sample id",
 
 
 ```
-
